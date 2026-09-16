@@ -1,9 +1,9 @@
 #/bin/bash
-name="eazy-rag-api"
+name="dimage-api"
 server="docker.sie.net.cn"
 server2="docker.jueyun.net"
 version=$(date +%Y%m%d%H%M%S)
-cd /project/eazy-ai/publish/eazy-rag-api
+cd /project/delly-net/DImage/publish/api
 echo "[+++] docker build -t $name:$version ."
 docker build -t $name:$version .
 # 推送到docker.sie.net.cn

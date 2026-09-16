@@ -1,31 +1,31 @@
 #!/bin/bash
 echo "[==========拉取代码==========]"
-cd /project/eazy-ai/eazy-rag
+cd /project/delly-net/DImage
 git checkout main
 git pull
 
 echo "[==========编译后端代码==========]"
-mkdir -p /project/eazy-ai/publish/eazy-rag-api/files
-cd /project/eazy-ai/eazy-rag/api
-/usr/bin/dotnet build EazyRag.Api.csproj -c Release -r linux-musl-x64 -p:IsPackable=false -o /project/eazy-ai/publish/eazy-rag-api/files
+mkdir -p /project/delly-net/DImage/publish/api/files
+cd /project/delly-net/DImage/Api/DImage.Api
+/usr/bin/dotnet build DImage.Api.csproj -c Release -r linux-musl-x64 -p:IsPackable=false -o /project/delly-net/DImage/publish/api/files
 
 echo "[==========更新前端依赖==========]"
-cd /project/eazy-ai/eazy-rag/ui
-npm install
+cd /project/delly-net/DImage/Vue
+pnpm install
 echo "[==========编译前端代码==========]"
-npm run build
+pnpm build
 echo "[==========复制前端文件==========]"
-mkdir -p /project/eazy-ai/publish/eazy-rag-ui/files
-rm -rf /project/eazy-ai/publish/eazy-rag-ui/files/*
-cp -r ./dist/* /project/eazy-ai/publish/eazy-rag-ui/files/
+mkdir -p /project/delly-net/DImage/publish/ui/files
+rm -rf /project/delly-net/DImage/publish/ui/files/*
+cp -r ./dist/* /project/delly-net/DImage/publish/ui/files/
 
 version=$(date +%Y%m%d%H%M%S)
 
 echo "[==========发布后端镜像==========]"
-name="eazy-rag-api"
+name="dimage-api"
 server="docker.sie.net.cn"
 server2="docker.jueyun.net"
-cd /project/eazy-ai/publish/eazy-rag-api
+cd /project/delly-net/DImage/publish/api
 echo "[+++] docker build -t $name:$version ."
 docker build -t $name:$version .
 # 推送到docker.sie.net.cn
@@ -47,10 +47,10 @@ echo "[---] docker rmi $server2/$name:$version"
 docker rmi $server2/$name:$version
 
 echo "[==========发布前端镜像==========]"
-name="eazy-rag-ui"
+name="dimage-ui"
 server="docker.sie.net.cn"
 server2="docker.jueyun.net"
-cd /project/eazy-ai/publish/eazy-rag-ui
+cd /project/delly-net/DImage/publish/ui
 echo "[+++] docker build -t $name:$version ."
 docker build -t $name:$version .
 # 推送到docker.sie.net.cn
