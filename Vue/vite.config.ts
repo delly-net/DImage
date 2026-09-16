@@ -5,7 +5,7 @@ import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
 
 // 后端地址,与 Api/DImage.Api/Properties/launchSettings.json 的 applicationUrl 对齐
-const backendTarget = 'http://localhost:5180'
+const backendTarget = 'http://localhost:19011'
 
 // https://vite.dev/config/
 export default defineConfig({
