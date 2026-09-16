@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
+import HelpView from '../views/HelpView.vue'
 import LoginView from '../views/LoginView.vue'
 import { useAuthStore } from '@/stores/auth'
 
@@ -7,6 +8,12 @@ declare module 'vue-router' {
   interface RouteMeta {
     /** 公开路由:未登录也可访问,全局守卫对其放行 */
     public?: boolean
+    /**
+     * 不渲染全局头部(`App.vue` 中的 `AppHeader`)。
+     *
+     * 缺省为「渲染头部」,只有确需无壳的页面(如登录页)才显式声明为 `true`。
+     */
+    hideHeader?: boolean
   }
 }
 
@@ -19,10 +26,16 @@ const router = createRouter({
       component: HomeView,
     },
     {
+      path: '/help',
+      name: 'help',
+      component: HelpView,
+      // 不带 meta.public:受全局守卫保护,未登录访问将被拦截并带 redirect 跳登录页
+    },
+    {
       path: '/login',
       name: 'login',
       component: LoginView,
-      meta: { public: true },
+      meta: { public: true, hideHeader: true },
     },
   ],
 })

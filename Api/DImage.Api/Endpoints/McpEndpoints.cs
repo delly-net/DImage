@@ -1,4 +1,5 @@
 using DImage.Api.Auth;
+using DImage.Api.Mcp;
 
 namespace DImage.Api.Endpoints;
 
@@ -24,7 +25,7 @@ public static class McpEndpoints
                     {
                         name = configuration["Service:Name"] ?? "DImage.Api",
                         version = configuration["Service:Version"] ?? "0.0.0",
-                        protocolVersion = "2025-06-18",
+                        protocolVersion = McpProtocol.ProtocolVersion,
                         authScheme = "Bearer"
                     }
                 });

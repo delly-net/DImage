@@ -84,7 +84,8 @@ app.MapGet("/", () => Results.Ok(new
         "GET /health/mcp",
         "GET /api/v1/ping",
         "POST /api/v1/auth/token",
-        "POST /api/v1/mcp/verify"
+        "POST /api/v1/mcp/verify",
+        "GET /api/v1/mcp/tools"
     }
 }))
 .WithName("GetServiceInfo")
@@ -110,5 +111,6 @@ api.MapGet("/ping", () => Results.Ok(new { message = "pong" }))
 
 app.MapAuthEndpoints();
 app.MapMcpEndpoints();
+app.MapMcpToolsEndpoints();
 
 app.Run();
