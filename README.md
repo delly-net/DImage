@@ -1,2 +1,3 @@
-# DImage
-A CLI tool designed to work alongside AI for image generation
+# DImage(小D图像)
+
+MCP service providing cloud based image drawing
