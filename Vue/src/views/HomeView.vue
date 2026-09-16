@@ -1,12 +1,28 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { fetchHealth, type HealthResponse } from '@/api/health'
+import { useAuthStore } from '@/stores/auth'
+
+const router = useRouter()
+const auth = useAuthStore()
 
 type Status = 'loading' | 'success' | 'error'
 
 const status = ref<Status>('loading')
 const health = ref<HealthResponse | null>(null)
 const errorMessage = ref('')
+
+/** 令牌过期时刻的本地化展示,无法解析时原样回显 */
+const expiresAtText = computed(() => {
+  const raw = auth.expiresAt
+  if (raw === null) {
+    return '—'
+  }
+
+  const date = new Date(raw)
+  return Number.isNaN(date.getTime()) ? raw : date.toLocaleString()
+})
 
 /** 调用后端健康检查,并把三种状态映射到界面 */
 async function load() {
@@ -23,6 +39,12 @@ async function load() {
   }
 }
 
+/** 登出:清理登录态后回登录页;跳转职责在视图层,store 不依赖 router */
+async function handleLogout(): Promise<void> {
+  auth.logout()
+  await router.push({ name: 'login' })
+}
+
 onMounted(load)
 </script>
 
@@ -30,6 +52,14 @@ onMounted(load)
   <main class="home">
     <h1>小D图像</h1>
     <p class="subtitle">云端图片绘制能力服务 · 前后端联调状态</p>
+
+    <section class="session">
+      <p class="session-state">
+        已登录 · 令牌有效期至
+        <time :datetime="auth.expiresAt ?? undefined">{{ expiresAtText }}</time>
+      </p>
+      <button type="button" @click="handleLogout">退出登录</button>
+    </section>
 
     <section class="card" aria-live="polite">
       <h2>后端服务状态</h2>
@@ -66,6 +96,24 @@ onMounted(load)
 }
 
 .subtitle {
+  color: var(--color-text-muted, #6b7280);
+}
+
+.session {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 1.5rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 8px;
+}
+
+.session-state {
+  margin: 0;
+  font-size: 0.875rem;
   color: var(--color-text-muted, #6b7280);
 }
 
