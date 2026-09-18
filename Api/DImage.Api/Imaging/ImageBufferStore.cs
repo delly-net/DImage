@@ -66,6 +66,20 @@ public readonly record struct ImageStoreStats(
 /// 而不阻塞等待 —— 两条规则共同保证不会出现「回收器等待写者、写者等待全局锁」的死锁。
 /// </para>
 /// <para>
+/// <b>同时取两个条目锁的规则(任务 16 随 <see cref="Composite"/> 引入)</b>:除
+/// <see cref="Composite"/> 外,本类型所有成员<b>只持有一个条目锁</b>,故条目锁之间本无顺序可言;
+/// 而合成必须同时锁住源与目标,于是首次出现了「两个条目锁」这一情形。规则有两条,缺一不可:
+/// <list type="number">
+///   <item><description>按 <b>Id 的序数序</b>(<see cref="string.CompareOrdinal(string, string)"/>)
+///   决定先后,使 A→B 与 B→A 两次调用取得一致的加锁顺序。若改用「先目标后源」这类按角色排序,
+///   两个方向相反的并发合成就会各持一把、互等对方 —— 经典的 ABBA 死锁;</description></item>
+///   <item><description><b>绝不在持有条目锁时再去取 <see cref="_gate"/></b>。本方法因此全程不碰全局锁:
+///   否则「持条目锁等全局锁」与 <see cref="Reap"/> 的「持全局锁等条目锁」
+///   恰好构成上述死锁的另一个实例,而这一个连加锁顺序都救不了。</description></item>
+/// </list>
+/// <b>后续若再添「一次动两张图」的能力,必须沿用这两条规则</b>,而不是各自发明一套顺序。
+/// </para>
+/// <para>
 /// <b>为什么超限立即失败、而不是驱逐已有对象</b>:驱逐会让<b>先创建、仍在使用</b>的 Id 突然失效,
 /// 调用方拿到的是一句「找不到」,却无从知道自己做错了什么 —— 真正的成因(别人挤占了容量)
 /// 出现在完全无关的请求里。静默失效比显式失败昂贵得多,故超限一律抛
@@ -432,6 +446,86 @@ public sealed class ImageBufferStore
 
             entry.LastAccessUtc = _timeProvider.GetUtcNow();
             return covered;
+        }
+    }
+
+    /// <summary>
+    /// 把一个 Id 的图像按落点、缩放与不透明度合成到另一个 Id 的图像上。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>本方法是唯一同时锁住两个条目锁的成员</b>,故加锁顺序是本方法最需要读懂的部分 ——
+    /// 见类型注释中「同时取两个条目锁的规则」。要点:两个 Id 指向<b>不同条目</b>时按 Id 序数序加锁;
+    /// 指向<b>同一条目</b>时只锁一次并先取快照。全程不碰 <see cref="_gate"/>。
+    /// </para>
+    /// <para>
+    /// <b>两个 Id 相同时为什么必须先 <see cref="ImageBuffer.Clone"/> 再合成</b>:
+    /// 合成是边读源、边写目标的就地操作,源与目标一旦是同一块像素,
+    /// 后写入的像素就会成为后续读取的输入,结果取决于扫描顺序 ——
+    /// 既不会报错,也无法从调用方的输入复现,只是输出被源图自身的像素质地拖尾涂抹。
+    /// 快照让「同 Id 自合并」退化为一个定义明确的操作:<b>结果等同于拿合成前的自己当源</b>,
+    /// 故同一个 <see cref="CompositeStyle"/> 在同一张图上重复执行是幂等的
+    /// (普通合成则相反,半透明叠加会逐次逼近源图颜色)。
+    /// 快照的成本是源图的一份深拷贝,故只在这一个分支上付。
+    /// </para>
+    /// <para>
+    /// <b>失败时两个 Id 的访问时间都不刷新</b>,与 <see cref="Draw"/>、<see cref="SetPixels"/> 一致:
+    /// 失败的请求不应把已无人使用的图像续命,否则持续用错参数打同一 Id 就成了绕过空闲回收的手段。
+    /// 校验在算法层完成,而它发生在取到快照、进入条目锁之后 ——
+    /// 也就是说参数非法时目标图像的像素<b>逐字节不变</b>,但源图在那次调用里确实被读过一遍。
+    /// </para>
+    /// </remarks>
+    /// <param name="targetId">目标 Id,就地修改。</param>
+    /// <param name="sourceId">源 Id;可与 <paramref name="targetId"/> 相同。</param>
+    /// <param name="style">合成样式(落点、缩放、不透明度)。</param>
+    /// <returns>被覆盖(覆盖率大于 0)的目标像素数;源图整体落在画布外时为 0。</returns>
+    /// <exception cref="ImageNotFoundException">任一 Id 不存在、已被释放或被回收。</exception>
+    /// <exception cref="InvalidGeometryException">落点非有限值或超出量级上限。</exception>
+    /// <exception cref="InvalidScaleException">缩放倍数非有限值,或小于等于 0。</exception>
+    /// <exception cref="InvalidOpacityException">不透明度非有限值,或落在 <c>[0, 1]</c> 之外。</exception>
+    public int Composite(string targetId, string sourceId, CompositeStyle style)
+    {
+        var target = Resolve(targetId);
+        var source = Resolve(sourceId);
+
+        if (ReferenceEquals(target, source))
+        {
+            lock (target.Sync)
+            {
+                EnsureAlive(target);
+
+                ImageBuffer snapshot = target.Image.Clone();
+                int covered = ImageCompositor.Composite(target.Image, snapshot, style);
+
+                target.LastAccessUtc = _timeProvider.GetUtcNow();
+                return covered;
+            }
+        }
+
+        // 按 Id 的序数序加锁,使 A→B 与 B→A 取得一致的顺序(见类型注释的 ABBA 段落)
+        var first = string.CompareOrdinal(target.Id, source.Id) <= 0 ? target : source;
+        var second = ReferenceEquals(first, target) ? source : target;
+
+        lock (first.Sync)
+        {
+            lock (second.Sync)
+            {
+                // 两把锁拿到之前对象都可能已被释放或回收,故两个都要复核
+                EnsureAlive(first);
+                EnsureAlive(second);
+
+                int covered = ImageCompositor.Composite(target.Image, source.Image, style);
+
+                var now = _timeProvider.GetUtcNow();
+                target.LastAccessUtc = now;
+
+                // 源图确实被读取过,故两个 Id 的访问时间一并刷新 ——
+                // 否则若只有目标续命,一张反复被当作贴图素材的源图会先于它的使用者被回收,
+                // 而调用方的下一句「还贴同一张」就突然收到「找不到」
+                source.LastAccessUtc = now;
+
+                return covered;
+            }
         }
     }
 

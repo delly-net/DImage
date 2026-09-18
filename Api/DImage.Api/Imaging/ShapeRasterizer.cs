@@ -134,24 +134,11 @@ internal static class ShapeRasterizer
                 // 代价是 Gray8 下混合发生在折叠后的亮度上,连续半覆盖混合存在 8 位量化损失,
                 // 且含 Alpha 格式的边缘像素 Alpha 会随之渐变(这是正确的抗锯齿表现,不是缺陷)。
                 PixelColor destination = image.GetPixel(x, y);
-                image.SetPixel(x, y, Mix(destination, foreground, value > 1f ? 1f : value));
+                image.SetPixel(x, y, ImageBlend.Mix(destination, foreground, value > 1f ? 1f : value));
             }
         }
 
         return covered;
-    }
-
-    /// <summary>按覆盖率在前景色与底色之间做线性插值,逐通道。</summary>
-    private static PixelColor Mix(PixelColor destination, PixelColor foreground, float coverage)
-    {
-        static byte Lerp(byte from, byte to, float t)
-            => (byte)Math.Clamp((int)(from + (to - from) * t + 0.5f), 0, 255);
-
-        return new PixelColor(
-            Lerp(destination.R, foreground.R, coverage),
-            Lerp(destination.G, foreground.G, coverage),
-            Lerp(destination.B, foreground.B, coverage),
-            Lerp(destination.A, foreground.A, coverage));
     }
 
     /// <summary>累积填充覆盖率。</summary>
