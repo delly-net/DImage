@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { RouterLink } from 'vue-router'
+import { SITE_NAME } from '@/appInfo'
 
 /**
  * 主导航栏目,数据驱动渲染。
@@ -15,7 +16,7 @@ const NAV_ITEMS = [
 <template>
   <header class="app-header">
     <div class="app-header__inner">
-      <RouterLink class="app-header__brand" :to="{ name: 'home' }">小D图像</RouterLink>
+      <RouterLink class="app-header__brand" :to="{ name: 'home' }">{{ SITE_NAME }}</RouterLink>
 
       <nav class="app-header__nav" aria-label="主导航">
         <RouterLink v-for="item in NAV_ITEMS" :key="item.name" :to="{ name: item.name }">
