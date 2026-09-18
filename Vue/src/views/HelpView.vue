@@ -54,6 +54,14 @@ const skillInfo = ref<SkillInstallResponse | null>(null)
 const skillError = ref('')
 const copyHint = ref('')
 
+/**
+ * MCP 接入配置复制提示与 `copyHint` 分开持有。
+ *
+ * 两个区块各有一个复制按钮,共用一份提示会让「复制了 MCP 命令」的反馈出现在「技能下载」区块里,
+ * 用户按提示去找却找不到对应按钮。提示必须与触发它的按钮同区块。
+ */
+const mcpCopyHint = ref('')
+
 const skills = computed(() => skillInfo.value?.skills ?? [])
 
 /** 拉取服务信息与工具清单,并把三种状态映射到界面 */
@@ -71,11 +79,17 @@ async function load() {
   }
 }
 
-/** 拉取技能安装命令与技能清单 */
+/**
+ * 拉取技能安装命令、MCP 接入配置安装命令与技能清单。
+ *
+ * 三者来自同一个接口,故共用一个 status:该请求失败时两个区块都不可用,
+ * 分开成两套状态只会出现「一个区块显示成功、另一个显示失败」这种不可能的局面。
+ */
 async function loadSkill() {
   skillStatus.value = 'loading'
   skillError.value = ''
   copyHint.value = ''
+  mcpCopyHint.value = ''
 
   try {
     skillInfo.value = await fetchSkillInstall()
@@ -106,6 +120,22 @@ async function copyInstallCommand() {
     copyHint.value = '已复制到剪贴板'
   } catch {
     copyHint.value = '复制失败,请手动选中上方命令后复制'
+  }
+}
+
+/** 复制 MCP 接入配置安装命令:失败形态与 `copyInstallCommand` 一致,原因见其注释 */
+async function copyMcpInstallCommand() {
+  const command = skillInfo.value?.mcpInstallCommand
+  if (!command) {
+    mcpCopyHint.value = '暂无可复制的安装命令'
+    return
+  }
+
+  try {
+    await navigator.clipboard.writeText(command)
+    mcpCopyHint.value = '已复制到剪贴板'
+  } catch {
+    mcpCopyHint.value = '复制失败,请手动选中上方命令后复制'
   }
 }
 
@@ -150,7 +180,11 @@ onMounted(() => {
       </p>
 
       <h3>2. 客户端接入配置</h3>
-      <p class="hint">示例中的接入地址为占位符,请替换为部署方提供的实际地址。</p>
+      <!-- 用文字指向下方区块而非 <a href="#...">:本页是 SPA 路由下的一个视图,站内锚点会触发路由跳转 -->
+      <p class="hint">
+        示例中的接入地址为占位符,请替换为部署方提供的实际地址。也可以不手工编辑 JSON,
+        改用下方「MCP 接入配置一键安装」中的命令自动写入。
+      </p>
 
       <div v-for="client in CLIENTS" :key="client.name" class="client">
         <h4>{{ client.name }}</h4>
@@ -165,6 +199,60 @@ onMounted(() => {
         <code>valid: true</code> 表示凭据可用。
       </p>
       <pre>{{ VERIFY_EXAMPLE }}</pre>
+    </section>
+
+    <section class="card" aria-live="polite">
+      <h2>MCP 接入配置一键安装</h2>
+
+      <p>
+        在本地 Windows 终端(PowerShell)中执行下方命令,即可把本服务写入<strong>执行命令时所在目录</strong>的
+        <code>.mcp.json</code>,无需手工编辑 JSON。
+      </p>
+
+      <p v-if="skillStatus === 'loading'" class="state state--loading">正在加载…</p>
+
+      <template v-else-if="skillStatus === 'success'">
+        <pre>{{ skillInfo?.mcpInstallCommand }}</pre>
+
+        <button type="button" class="copy" @click="copyMcpInstallCommand">复制命令</button>
+        <p v-if="mcpCopyHint" class="hint">{{ mcpCopyHint }}</p>
+
+        <h3>该命令会做什么</h3>
+        <ul class="tools">
+          <li>
+            <strong>只改当前目录</strong>
+            <span class="hint">
+              写入执行命令时所在目录的 <code>.mcp.json</code>,即当前项目;不触碰用户全局配置,也不影响其他项目。
+            </span>
+          </li>
+          <li>
+            <strong>合并保留</strong>
+            <span class="hint">
+              文件已存在时只新增或更新 <code>mcpServers.dimage</code>,其他 MCP 服务原样保留;
+              文件不是合法 JSON 时会中止并提示,不做任何写入。
+            </span>
+          </li>
+          <li>
+            <strong>凭据不落脚本</strong>
+            <span class="hint">
+              TOKEN 优先读环境变量 <code>DIMAGE_TOKEN</code>,未设置则在执行时提示输入;
+              脚本正文不含任何真实凭据。
+            </span>
+          </li>
+        </ul>
+      </template>
+
+      <template v-else>
+        <p class="state state--error">✗ MCP 接入配置安装命令加载失败</p>
+        <p class="error-detail">{{ skillError }}</p>
+        <p class="hint">
+          安装命令由服务端按配置的对外地址生成;若提示地址未配置,请由服务管理员配置
+          <code>API_BASE_URL</code> 后重试。
+        </p>
+      </template>
+
+      <!-- 与「技能下载」区块的按钮同源(同一个请求),分列两处是为了让任一区块单独出错时都能就地重试 -->
+      <button type="button" :disabled="skillStatus === 'loading'" @click="loadSkill">重新检测</button>
     </section>
 
     <section class="card" aria-live="polite">

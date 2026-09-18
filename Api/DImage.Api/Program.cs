@@ -121,6 +121,8 @@ app.MapGet("/", () => Results.Ok(new
         // Skill 下载端点挂在根路径(匿名),见 SkillEndpoints 的类注释
         "GET /skill/install",
         "GET /skill/install/{skill}/content",
+        // MCP 客户端接入配置的安装脚本,与 Skill 安装并列暴露在根路径(匿名)
+        "GET /mcp/install",
         // 该清单无自动生成机制,新增端点必须手工同步,否则服务元信息与实际接口清单不一致
         "POST /mcp"
     }
@@ -150,10 +152,12 @@ app.MapAuthEndpoints();
 app.MapMcpEndpoints();
 app.MapMcpToolsEndpoints();
 app.MapSkillEndpoints();
+app.MapMcpInstallEndpoints();
 
 // MCP 协议端点(Streamable HTTP)。授权策略必须显式指定 McpAccess:
 // 不写的话会落到默认的 JwtBearer 方案上,而 MCP 客户端持有的是静态 TOKEN,
 // 表现为「TOKEN 正确却始终 401」。MapMcp 返回 IEndpointConventionBuilder,故可链式挂策略。
-app.MapMcp("/mcp").RequireAuthorization(AuthConstants.Policies.McpAccess);
+// 路径取 McpProtocol.EndpointPath:同一路径还被 .mcp.json 配置片段与安装脚本写出,四处必须同源
+app.MapMcp(McpProtocol.EndpointPath).RequireAuthorization(AuthConstants.Policies.McpAccess);
 
 app.Run();

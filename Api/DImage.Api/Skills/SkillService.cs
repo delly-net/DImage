@@ -7,7 +7,7 @@ using ModelContextProtocol.Server;
 namespace DImage.Api.Skills;
 
 /// <summary>
-/// Skill 文本生成服务:安装命令、PowerShell 安装脚本与各技能的 <c>SKILL.md</c> 内容。
+/// 对外安装文本生成服务:两类安装脚本(MCP 客户端接入配置、Skill 下载)的命令与正文,以及各技能的 <c>SKILL.md</c> 内容。
 /// </summary>
 /// <remarks>
 /// <para>
@@ -23,16 +23,23 @@ namespace DImage.Api.Skills;
 /// </remarks>
 public static class SkillService
 {
-    /// <summary>安装脚本的下载路径(根路径,匿名访问)。</summary>
+    /// <summary>Skill 安装脚本的下载路径(根路径,匿名访问)。</summary>
     public const string InstallScriptPath = "/skill/install";
 
     /// <summary>技能内容的下载路径前缀(根路径,匿名访问),后接 <c>{skillKey}/content</c>。</summary>
     public const string SkillContentPathPrefix = "/skill/install";
 
+    /// <summary>MCP 安装脚本的下载路径(根路径,匿名访问)。</summary>
+    /// <remarks>
+    /// 与 <see cref="InstallScriptPath"/> 对称:<c>/skill/install</c> 装技能,<c>/mcp/install</c> 装 MCP 客户端接入配置。
+    /// 挂在根路径而非 <c>/api/v1</c> 下的理由与 Skill 安装脚本完全相同 —— 二者都由用户在终端执行,没有登录态可携带。
+    /// </remarks>
+    public const string McpInstallPath = "/mcp/install";
+
     /// <summary>
     /// 生成用户复制到终端执行的安装命令(PowerShell)。
     /// </summary>
-    /// <param name="baseUrl">服务对外根地址(<c>Service:BaseUrl</c>),允许带尾部斜杠。</param>
+    /// <param name="baseUrl">服务对外根地址(环境变量 <c>API_BASE_URL</c>,兜底配置 <c>Service:BaseUrl</c>),允许带尾部斜杠。</param>
     /// <remarks>
     /// <c>irm</c> 是 <c>Invoke-RestMethod</c> 的别名;对 <c>text/plain</c> 响应它返回响应体字符串,
     /// 管道给 <c>iex</c>(<c>Invoke-Expression</c>)即在本会话中执行该脚本 —— 故脚本里的 <c>$PWD</c>
@@ -45,7 +52,7 @@ public static class SkillService
     /// 生成 PowerShell 安装脚本:循环下载清单中每个技能的 <c>SKILL.md</c>,写入执行命令所在目录的
     /// <c>.claude\skills\{技能名}\</c>(UTF-8)。
     /// </summary>
-    /// <param name="baseUrl">服务对外根地址(<c>Service:BaseUrl</c>)。</param>
+    /// <param name="baseUrl">服务对外根地址(环境变量 <c>API_BASE_URL</c>,兜底配置 <c>Service:BaseUrl</c>)。</param>
     /// <param name="serviceName">服务名,仅用于脚本注释与结束提示。</param>
     /// <param name="serviceVersion">服务版本,仅用于脚本注释与结束提示。</param>
     /// <remarks>
@@ -108,11 +115,141 @@ public static class SkillService
     }
 
     /// <summary>
+    /// 生成用户复制到终端执行的 MCP 安装命令(PowerShell)。
+    /// </summary>
+    /// <param name="baseUrl">服务对外根地址(环境变量 <c>API_BASE_URL</c>,兜底配置 <c>Service:BaseUrl</c>)。</param>
+    public static string GenerateMcpInstallCommand(string baseUrl)
+        => $"irm {NormalizeBaseUrl(baseUrl)}{McpInstallPath} | iex";
+
+    /// <summary>
+    /// 生成 MCP 安装脚本:把本服务写入执行命令所在目录的 <c>.mcp.json</c>。
+    /// </summary>
+    /// <param name="baseUrl">服务对外根地址(环境变量 <c>API_BASE_URL</c>,兜底配置 <c>Service:BaseUrl</c>)。</param>
+    /// <param name="serviceName">服务名,仅用于脚本注释与结束提示。</param>
+    /// <param name="serviceVersion">服务版本,仅用于脚本注释与结束提示。</param>
+    /// <remarks>
+    /// <para>
+    /// <b>失败路径一律 <c>Write-Host</c> / <c>Write-Warning</c> + <c>return</c>,禁止 <c>throw</c> 与 <c>exit</c></b>。
+    /// 本脚本由用户 <c>irm ... | iex</c> 在**自己的交互式会话**中执行:<c>throw</c> 会把 PowerShell 异常栈糊到用户脸上,
+    /// 而 <c>exit</c> 更严重 —— 它会**直接终止用户的终端会话**(`iex` 不是子进程)。故「中止」在此只有一个合法形态:说清楚原因,然后 <c>return</c>。
+    /// </para>
+    /// <para>
+    /// <b>合并而非覆盖</b>:用户的 <c>.mcp.json</c> 往往已配置了别的 MCP 服务(含各自凭据),
+    /// 整份重写等于凭一次安装把别人的配置删干净。故仅在解析成功时按 key 合并;解析失败即中止且**不落盘**。
+    /// </para>
+    /// <para>
+    /// <b><c>-Depth</c> 必须显式给足 10</b>:<c>ConvertTo-Json</c> 默认深度为 2,会把 <c>headers</c> 这类嵌套结构
+    /// 静默降级成字符串 —— 产物仍是合法 JSON、也能写进文件,但 MCP 客户端读到的 <c>headers</c> 不再是对象,
+    /// 表现为「配置看着有、鉴权就是不生效」,排查成本极高。
+    /// </para>
+    /// <para>
+    /// <b>落盘编码固定 UTF-8 无 BOM</b>,沿用 Skill 安装脚本的约定。
+    /// </para>
+    /// </remarks>
+    public static string GenerateMcpInstallScript(string baseUrl, string serviceName, string serviceVersion)
+    {
+        var root = NormalizeBaseUrl(baseUrl);
+
+        var script = $$"""
+            # 小D图像 MCP 安装脚本(由服务端动态生成,请勿手工修改)
+            # 服务:{{serviceName}} {{serviceVersion}}
+            # 用法:irm {{root}}{{McpInstallPath}} | iex
+            #
+            # 作用:把 dimage 服务写入「执行命令所在目录」的 .mcp.json(即当前项目,而非用户全局目录)。
+            # 合并:.mcp.json 已存在时仅新增或更新 mcpServers.{{McpClientConfig.ServerKey}},其他 MCP 服务原样保留。
+            #      注意 JSON 重新序列化会重排键序与缩进,合并后文件字节与原文不同(键值语义不变)。
+            # TOKEN:优先读环境变量 DIMAGE_TOKEN,未设置则提示输入;脚本正文不含任何真实凭据。
+
+            $baseUrl = "{{EscapePowerShell(root)}}"
+            $mcpUrl = "$baseUrl{{McpProtocol.EndpointPath}}"
+            $serverKey = "{{McpClientConfig.ServerKey}}"
+            $target = Join-Path $PWD ".mcp.json"
+
+            # ———— 取 TOKEN:环境变量优先,缺失则交互输入 ————
+            $token = $env:DIMAGE_TOKEN
+            if ([string]::IsNullOrWhiteSpace($token)) {
+                # 非交互环境下 Read-Host 会失败,按「未取得 TOKEN」处理,不让异常逃逸到用户终端
+                try {
+                    $secure = Read-Host -Prompt "请输入 MCP TOKEN(输入内容不回显)" -AsSecureString
+                    $token = [System.Net.NetworkCredential]::new("", $secure).Password
+                }
+                catch {
+                    $token = $null
+                }
+            }
+
+            if ([string]::IsNullOrWhiteSpace($token)) {
+                Write-Host ""
+                Write-Warning "未取得 TOKEN,已中止安装:$target 未做任何改动。"
+                Write-Warning "请先设置环境变量 DIMAGE_TOKEN 后重试,或在提示时输入 TOKEN。"
+                return
+            }
+
+            # ———— 解析既有配置:只有存在且合法才合并 ————
+            $config = $null
+            if (Test-Path $target) {
+                $raw = Get-Content -Path $target -Raw -Encoding UTF8
+                if (-not [string]::IsNullOrWhiteSpace($raw)) {
+                    try {
+                        $config = $raw | ConvertFrom-Json
+                    }
+                    catch {
+                        Write-Host ""
+                        Write-Warning "已有 .mcp.json 不是合法 JSON,已中止安装:$target 未做任何改动。"
+                        Write-Warning "请修正该文件后重试;如不再需要原内容,可先备份改名再重新执行本脚本。"
+                        return
+                    }
+
+                    if ($null -eq $config -or -not ($config -is [PSCustomObject])) {
+                        Write-Host ""
+                        Write-Warning "已有 .mcp.json 的顶层不是 JSON 对象,已中止安装:$target 未做任何改动。"
+                        return
+                    }
+                }
+            }
+
+            if ($null -eq $config) {
+                $config = New-Object PSObject
+            }
+
+            # ———— 合并:mcpServers 缺失则补建,同名项被更新 ————
+            if (@($config.PSObject.Properties.Name) -notcontains "mcpServers" -or $null -eq $config.mcpServers) {
+                $config | Add-Member -NotePropertyName "mcpServers" -NotePropertyValue (New-Object PSObject) -Force
+            }
+
+            $entry = [ordered]@{
+                type    = "{{McpClientConfig.TransportType}}"
+                url     = $mcpUrl
+                headers = [ordered]@{ Authorization = "Bearer $token" }
+            }
+
+            $config.mcpServers | Add-Member -NotePropertyName $serverKey -NotePropertyValue $entry -Force
+            $others = @($config.mcpServers.PSObject.Properties.Name | Where-Object { $_ -ne $serverKey })
+
+            # 深度必须给足:默认 2 会把 headers 截断成字符串,产物「合法但不可用」
+            $json = $config | ConvertTo-Json -Depth 10
+            [System.IO.File]::WriteAllText($target, $json + "`n", (New-Object System.Text.UTF8Encoding($false)))
+
+            # ———— 回执 ————
+            Write-Host ""
+            Write-Host "[小D图像] MCP 接入配置已写入" -ForegroundColor Green
+            Write-Host "  文件:$target"
+            Write-Host "  服务:$mcpUrl"
+            if ($others.Count -gt 0) {
+                Write-Host "  已保留的其他 MCP 服务:$($others -join ', ')"
+            }
+            Write-Host ""
+            """;
+
+        return ToLf(script);
+    }
+
+    /// <summary>
     /// 按技能 key 生成对应的 <c>SKILL.md</c> 内容。
     /// </summary>
     /// <param name="skillKey">技能 key(取自 <see cref="SkillCatalog.Definitions"/>)。</param>
     /// <param name="tools">当前服务注册的全部 MCP 工具(取自 <c>McpServerOptions.ToolCollection</c>)。</param>
-    /// <param name="baseUrl">服务对外根地址(<c>Service:BaseUrl</c>)。</param>
+    /// <param name="baseUrl">服务对外根地址(环境变量 <c>API_BASE_URL</c>,兜底配置 <c>Service:BaseUrl</c>)。</param>
     /// <param name="serviceName">服务名。</param>
     /// <param name="serviceVersion">服务版本。</param>
     /// <returns>技能内容;key 未知时返回 <c>null</c>(由端点层翻译为 404)。</returns>
@@ -201,7 +338,7 @@ public static class SkillService
         sb.AppendLine("| 项 | 值 |");
         sb.AppendLine("| --- | --- |");
         sb.AppendLine($"| 服务 | {Inline(serviceName)} {Inline(serviceVersion)} |");
-        sb.AppendLine($"| MCP 端点 | `{root}/mcp` |");
+        sb.AppendLine($"| MCP 端点 | `{root}{McpProtocol.EndpointPath}` |");
         sb.AppendLine("| 传输方式 | Streamable HTTP(无状态,不返回 Mcp-Session-Id) |");
         sb.AppendLine("| 鉴权 | 请求头 `Authorization: Bearer <TOKEN>`(静态凭据,无过期时间) |");
         sb.AppendLine($"| 协议版本 | {McpProtocol.ProtocolVersion} |");
@@ -209,17 +346,12 @@ public static class SkillService
         sb.AppendLine("客户端接入配置(`.mcp.json`,置于项目根目录):");
         sb.AppendLine();
         sb.AppendLine("```json");
-        sb.AppendLine("{");
-        sb.AppendLine("  \"mcpServers\": {");
-        sb.AppendLine("    \"dimage\": {");
-        sb.AppendLine("      \"type\": \"http\",");
-        sb.AppendLine($"      \"url\": \"{root}/mcp\",");
-        sb.AppendLine("      \"headers\": { \"Authorization\": \"Bearer <TOKEN>\" }");
-        sb.AppendLine("    }");
-        sb.AppendLine("  }");
-        sb.AppendLine("}");
+        // 形状取自 McpClientConfig —— 与 MCP 安装脚本实际写入的内容同源,不在此手写第二份
+        sb.Append(McpClientConfig.BuildConfigJson(root));
         sb.AppendLine("```");
         sb.AppendLine();
+        sb.AppendLine($"> 也可用一条命令自动写入:在项目根目录执行 `irm {root}{McpInstallPath} | iex`。");
+        sb.AppendLine("> 该脚本会合并保留既有 `.mcp.json` 中的其他 MCP 服务,TOKEN 取自环境变量 `DIMAGE_TOKEN` 或终端提示输入。");
         sb.AppendLine("> TOKEN 由部署方经环境变量提供,请向服务管理员索取;技能内容与脚本中**不包含**任何真实凭据。");
         sb.AppendLine();
 

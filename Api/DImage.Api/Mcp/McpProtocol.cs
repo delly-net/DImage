@@ -32,4 +32,14 @@ public static class McpProtocol
     /// </para>
     /// </remarks>
     public const string ProtocolVersion = "2025-11-25";
+
+    /// <summary>
+    /// MCP 协议端点的路径。
+    /// </summary>
+    /// <remarks>
+    /// <b>该路径不只被 <c>Program.cs</c> 的 <c>MapMcp</c> 使用</b>:技能内容里的接入地址表格、客户端
+    /// <c>.mcp.json</c> 配置片段、MCP 安装脚本三处都要写出同一个地址。路径在此集中定义,这三处一律引用本常量 ——
+    /// 否则端点路径一旦调整,四处各写一遍的字符串必然出现「有的改了有的没改」的静默错配。
+    /// </remarks>
+    public const string EndpointPath = "/mcp";
 }

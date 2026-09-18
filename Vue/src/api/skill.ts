@@ -18,16 +18,21 @@ export interface SkillInstallResponse {
   installUrl: string
   /** 用户在本地终端执行的安装命令 */
   installCommand: string
+  /** MCP 接入配置安装脚本地址 */
+  mcpInstallUrl: string
+  /** 用户在本地终端执行的 MCP 接入配置安装命令 */
+  mcpInstallCommand: string
   /** 执行该命令将安装的技能清单;服务未发布技能时为空数组 */
   skills: SkillDefinition[]
 }
 
 /**
- * 获取 Skill 安装命令与技能清单。
+ * 获取 Skill 安装命令、MCP 接入配置安装命令与技能清单。
  *
  * 路径写站内相对路径,开发期由 Vite `server.proxy` 的 `/api` 规则转发到后端。
  * 本接口受 JWT 保护,未登录或会话失效时由 `client.ts` 触发全局登出。
- * 服务端未配置对外地址(`Service:BaseUrl`)时返回 400 与错误码 `skill_base_url_not_configured`。
+ * 服务端未配置对外地址时返回 400 与错误码 `skill_base_url_not_configured`
+ * (地址优先级:环境变量 `API_BASE_URL` > 配置 `Service:BaseUrl`)。
  */
 export function fetchSkillInstall(): Promise<SkillInstallResponse> {
   return http.get<SkillInstallResponse>('/api/v1/skills/install-command')

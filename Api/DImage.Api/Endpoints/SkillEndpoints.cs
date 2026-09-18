@@ -1,3 +1,4 @@
+using DImage.Api.Options;
 using DImage.Api.Skills;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Server;
@@ -19,17 +20,14 @@ namespace DImage.Api.Endpoints;
 /// 任何人取到的只是一份描述「服务能做什么」的 Markdown。
 /// </para>
 /// <para>
-/// <b>地址一律取配置 <c>Service:BaseUrl</c>,不按请求 <c>Host</c> 隐式推导</b>:服务经反向代理或
+/// <b>地址一律取 <see cref="ServiceAddress"/> 的解析结果(环境变量 <c>API_BASE_URL</c> 优先,
+/// 兜底配置 <c>Service:BaseUrl</c>),不按请求 <c>Host</c> 隐式推导</b>:服务经反向代理或
 /// 分域部署时,请求 Host 可能是代理地址或前端域,推导出的下载地址会把用户引向错误的服务。
 /// 未配置时给出可读提示而非 400/500。
 /// </para>
 /// </remarks>
 public static class SkillEndpoints
 {
-    /// <summary>地址未配置时的可读提示(返回给终端用户,故为纯文本单行,不含堆栈)。</summary>
-    private const string BaseUrlMissingTip =
-        "# 服务对外地址(Service:BaseUrl)未配置,请联系服务管理员配置后重新获取安装命令。";
-
     public static IEndpointRouteBuilder MapSkillEndpoints(this IEndpointRouteBuilder app)
     {
         // —————————————— 匿名:安装脚本 ——————————————
@@ -37,13 +35,13 @@ public static class SkillEndpoints
         // 用 Results.Text 而非 Ok:响应必须是可直接管道给 iex 的脚本原文,包进 JSON 会让 iex 执行一串 JSON。
         app.MapGet(SkillService.InstallScriptPath, (IConfiguration configuration) =>
             {
-                var baseUrl = ReadBaseUrl(configuration);
+                var baseUrl = ServiceAddress.ReadBaseUrl(configuration);
                 if (baseUrl.Length == 0)
                 {
-                    return Results.Text(BaseUrlMissingTip, "text/plain; charset=utf-8");
+                    return Results.Text(ServiceAddress.MissingBaseUrlTip, "text/plain; charset=utf-8");
                 }
 
-                var script = SkillService.GenerateInstallScript(baseUrl, ReadServiceName(configuration), ReadServiceVersion(configuration));
+                var script = SkillService.GenerateInstallScript(baseUrl, ServiceAddress.ReadServiceName(configuration), ServiceAddress.ReadServiceVersion(configuration));
                 return Results.Text(script, "text/plain; charset=utf-8");
             })
             .WithName("GetSkillInstallScript")
@@ -58,16 +56,16 @@ public static class SkillEndpoints
                 IConfiguration configuration,
                 IOptions<McpServerOptions> mcpOptions) =>
             {
-                var baseUrl = ReadBaseUrl(configuration);
+                var baseUrl = ServiceAddress.ReadBaseUrl(configuration);
                 if (baseUrl.Length == 0)
                 {
-                    return Results.Text(BaseUrlMissingTip, "text/plain; charset=utf-8");
+                    return Results.Text(ServiceAddress.MissingBaseUrlTip, "text/plain; charset=utf-8");
                 }
 
                 // 工具清单取自 SDK 注册表,与 GET /api/v1/mcp/tools、MCP 的 tools/list 是同一份事实源
                 var tools = mcpOptions.Value.ToolCollection ?? [];
                 var content = SkillService.TryGenerateSkillContent(
-                    skill, tools, baseUrl, ReadServiceName(configuration), ReadServiceVersion(configuration));
+                    skill, tools, baseUrl, ServiceAddress.ReadServiceName(configuration), ServiceAddress.ReadServiceVersion(configuration));
 
                 if (content is null)
                 {
@@ -92,7 +90,7 @@ public static class SkillEndpoints
 
         api.MapGet("/skills/install-command", (IConfiguration configuration) =>
             {
-                var baseUrl = ReadBaseUrl(configuration);
+                var baseUrl = ServiceAddress.ReadBaseUrl(configuration);
                 if (baseUrl.Length == 0)
                 {
                     // 只返回错误码,中文文案由前端渲染(沿用「接口只返回结构化数据」约定);
@@ -105,6 +103,10 @@ public static class SkillEndpoints
                     baseUrl,
                     installUrl = $"{baseUrl}{SkillService.InstallScriptPath}",
                     installCommand = SkillService.GenerateInstallCommand(baseUrl),
+                    // MCP 接入配置的「一条命令安装」入口:与技能安装并列暴露,
+                    // 否则新端点没有任何界面可达,用户只能靠猜地址
+                    mcpInstallUrl = $"{baseUrl}{SkillService.McpInstallPath}",
+                    mcpInstallCommand = SkillService.GenerateMcpInstallCommand(baseUrl),
                     skills = SkillCatalog.Definitions
                         .Select(s => new { key = s.Key, name = s.Name, description = s.Description })
                         .ToArray()
@@ -120,14 +122,4 @@ public static class SkillEndpoints
 
         return app;
     }
-
-    /// <summary>读取并规范化服务对外根地址;未配置时返回空串,由各端点走「未配置」分支。</summary>
-    private static string ReadBaseUrl(IConfiguration configuration)
-        => (configuration["Service:BaseUrl"] ?? "").Trim().TrimEnd('/');
-
-    private static string ReadServiceName(IConfiguration configuration)
-        => configuration["Service:Name"] ?? "DImage.Api";
-
-    private static string ReadServiceVersion(IConfiguration configuration)
-        => configuration["Service:Version"] ?? "0.0.0";
 }
