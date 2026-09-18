@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DImage.Api.Imaging;
@@ -185,7 +184,7 @@ public sealed class ImageTools(ImageBufferStore store)
         {
             PixelPoint point = points[i];
 
-            if (!TryParseColor(point.Color, out var color))
+            if (!ColorText.TryParseColor(point.Color, out var color))
             {
                 return Error(
                     CodeInvalidColor,
@@ -305,65 +304,9 @@ public sealed class ImageTools(ImageBufferStore store)
         }
     }
 
-    /// <summary>
-    /// 解析 <c>#RRGGBB</c> 或 <c>#RRGGBBAA</c> 形式的颜色串(大小写不敏感)。
-    /// </summary>
-    /// <remarks>
-    /// 逐字符先验十六进制再取值,而不是直接把子串交给
-    /// <see cref="byte.TryParse(ReadOnlySpan{char}, NumberStyles, IFormatProvider, out byte)"/>:
-    /// <see cref="NumberStyles.HexNumber"/> <b>允许前后空白</b>,形如 <c>"#1 2345"</c> 的输入会被
-    /// 静默接受成另一个颜色。颜色解析是纯字符串处理,应当对非法输入<b>零容忍</b>。
-    /// </remarks>
-    private static bool TryParseColor(string? text, out PixelColor color)
-    {
-        color = default;
-
-        if (string.IsNullOrEmpty(text))
-        {
-            return false;
-        }
-
-        ReadOnlySpan<char> span = text.AsSpan().Trim();
-
-        // 必须带 '#'。允许省略会让 "123456" 这类任意六位串被当成颜色,
-        // 而调用方很可能本意是别的编码(如十进制 RGB 元组)
-        if (span.Length == 0 || span[0] != '#')
-        {
-            return false;
-        }
-
-        span = span[1..];
-        if (span.Length is not (6 or 8))
-        {
-            return false;
-        }
-
-        foreach (char c in span)
-        {
-            if (!IsHexDigit(c))
-            {
-                return false;
-            }
-        }
-
-        byte r = ParseHexByte(span[..2]);
-        byte g = ParseHexByte(span[2..4]);
-        byte b = ParseHexByte(span[4..6]);
-
-        // 六位形式不带 Alpha 通道,按不透明处理 —— 与 ImageBuffer 对无 Alpha 格式的语义一致
-        byte a = span.Length == 8 ? ParseHexByte(span[6..8]) : (byte)255;
-
-        color = new PixelColor(r, g, b, a);
-        return true;
-    }
-
-    /// <summary>判断字符是否为十六进制数字(仅 ASCII,不依赖区域设置)。</summary>
-    private static bool IsHexDigit(char c)
-        => c is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F';
-
-    /// <summary>把已确认为十六进制的两个字符解析为一个字节。</summary>
-    private static byte ParseHexByte(ReadOnlySpan<char> hex)
-        => byte.Parse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+    // 颜色解析(TryParseColor / IsHexDigit / ParseHexByte)已抽到 ColorText:
+    // 绘制工具需要同一套解析,留在本类型里只会让两份实现逐渐分叉。
+    // 该抽取是纯搬移,本类型的行为、错误文案与线上契约逐字未变。
 }
 
 // —————————————————————— 对外 JSON 契约 ——————————————————————

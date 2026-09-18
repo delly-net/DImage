@@ -75,10 +75,15 @@ builder.Services.AddHostedService<ImageBufferReaper>();
 // MCP 服务端:默认无状态 Streamable HTTP 传输。
 // 刻意不启用 EnableLegacySse —— 那是一条仅用于兼容旧客户端的废弃路径,
 // 开启等于把一个额外的公网入口挂在 /mcp 上,而本项目没有任何客户端依赖它。
+//
+// 工具类型在此逐个登记:ToolCollection 是工具清单的唯一事实源,
+// GET /api/v1/mcp/tools 与 /mcp 的 tools/list 都从它派生,故新增工具只需加一行 WithTools<T>,
+// 前端与帮助页无需任何改动
 builder.Services
     .AddMcpServer()
     .WithHttpTransport()
-    .WithTools<ImageTools>();
+    .WithTools<ImageTools>()
+    .WithTools<ShapeTools>();
 
 var app = builder.Build();
 

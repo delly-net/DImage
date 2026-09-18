@@ -309,6 +309,58 @@ public sealed class ImageBufferStore
     }
 
     /// <summary>
+    /// 把一个形状按给定样式绘制到指定图像上。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>校验在条目锁内、在任何像素写入之前完成</b>,沿用 <see cref="SetPixels"/> 的原子性范式:
+    /// 样式或几何参数非法时抛出异常,图像保持<b>零改动</b>。
+    /// </para>
+    /// <para>
+    /// <b>越界是裁剪语义,不是错误</b>:形状几何落在画布外(含部分在外)时正常绘制,
+    /// 只把画布内的部分落到像素上。这与 <see cref="SetPixels"/> 的「任一点越界即整批拒绝」
+    /// <b>刻意不同</b>,理由见 <see cref="ImageDraw"/>。
+    /// </para>
+    /// <para>
+    /// 绘制全程在条目锁内进行,故同一 Id 上的并发绘制与像素写入不会交错 ——
+    /// 代价是大图的整个绘制期间该 Id 被独占,与 <see cref="EncodePng"/> 同理。
+    /// </para>
+    /// <para>
+    /// <see cref="Shape"/> 与 <see cref="DrawStyle"/> 都是<b>纯值输入</b>:本方法因此不需要
+    /// 把 <see cref="ImageBuffer"/> 交出去,「裸缓冲区不出注册表」的约束继续成立。
+    /// </para>
+    /// </remarks>
+    /// <param name="id">目标 Id。</param>
+    /// <param name="shape">待绘制的形状。</param>
+    /// <param name="style">绘制样式。</param>
+    /// <returns>被覆盖(覆盖率大于 0)的像素数;形状整体落在画布外时为 0。</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="shape"/> 为 <c>null</c>。</exception>
+    /// <exception cref="ImageNotFoundException">Id 不存在、已被释放或被回收。</exception>
+    /// <exception cref="InvalidStrokeWidthException">线宽非有限、非正或超上限。</exception>
+    /// <exception cref="InvalidFillRuleException">填充规则不是已定义值。</exception>
+    /// <exception cref="InvalidGeometryException">几何参数非法。</exception>
+    /// <exception cref="PathSyntaxException"><c>d</c> 字符串存在语法错误。</exception>
+    /// <exception cref="DrawingLimitExceededException">超出绘制上限。</exception>
+    public int Draw(string id, Shape shape, DrawStyle style)
+    {
+        ArgumentNullException.ThrowIfNull(shape);
+
+        var entry = Resolve(id);
+        lock (entry.Sync)
+        {
+            EnsureAlive(entry);
+
+            // 绘制失败时不会走到下面这行,访问时间不刷新 —— 与 SetPixels 一致:
+            // 失败的请求不应把一张已无人使用的图像续命,否则「持续用错参数打同一 Id」
+            // 就成了绕过空闲回收的手段
+            int covered = ImageDraw.Draw(entry.Image, shape, style);
+
+            entry.LastAccessUtc = _timeProvider.GetUtcNow();
+            return covered;
+        }
+    }
+
+    /// <summary>
     /// 把指定图像编码为 PNG 字节流。
     /// </summary>
     /// <remarks>
