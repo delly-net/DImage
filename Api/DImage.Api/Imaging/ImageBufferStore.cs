@@ -154,22 +154,81 @@ public sealed class ImageBufferStore
 
         // 几何校验与分配由 ImageBuffer 唯一负责,避免此处的校验与构造期校验出现两套标准
         var image = new ImageBuffer(width, height, format);
+
+        return Register(image);
+    }
+
+    /// <summary>
+    /// <b>零分配</b>的容量预检:在真正分配像素内存之前,先用「声明尺寸」撞一遍注册表容量。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>为什么必须真的零分配</b>:上传路径会在解码 PNG 之前调用本方法。它若顺手
+    /// <c>new ImageBuffer(...)</c> 探一下大小,「先校验、后分配」就退化成了「先分配再拒绝」——
+    /// 于是「声明 16384×16384、IDAT 只有几十字节」这类请求仍然能逼出一次近 GB 的分配,
+    /// 整个炸开防护链条失效,而调用方看到的错误码却完全正常。
+    /// </para>
+    /// <para>
+    /// 与 <see cref="Create"/> 的差异只在于「只预检、不登记」:<see cref="Add"/> 会在锁内复核,
+    /// 故预检通过不代表登记必然成功(期间可能有并发登记),这是刻意的两段式 ——
+    /// 前段保证异常路径不产生巨额分配,后段保证核算一致性。
+    /// </para>
+    /// </remarks>
+    /// <param name="width">即将分配的宽度(像素)。</param>
+    /// <param name="height">即将分配的高度(像素)。</param>
+    /// <param name="format">即将使用的像素格式。</param>
+    /// <exception cref="ArgumentOutOfRangeException">尺寸非法或超出 <see cref="ImageLimits"/>。</exception>
+    /// <exception cref="ImageCapacityExceededException">对象数或总字节数超出上限。</exception>
+    public void EnsureCapacity(int width, int height, PixelFormat format)
+    {
+        // 字节数的计算口径由 ImageBuffer 唯一负责 —— 在此重算一份等于让同一个公式有两个副本
+        long byteLength = ImageBuffer.ComputeByteLength(width, height, format);
+
+        lock (_gate)
+        {
+            ThrowIfExceeded(byteLength);
+        }
+    }
+
+    /// <summary>
+    /// 登记一张<b>已填好像素</b>的外部构造图像,返回其唯一 Id。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>为什么另开方法而不复用 <see cref="Create"/></b>:<see cref="Create"/> 是已被既有
+    /// 四项工具验收过的路径,「分配与登记同在一个方法内」正是它的语义。上传路径拿到的是
+    /// 一张<b>已经构造并填好像素</b>的缓冲区,需要的是「只登记、不分配」这另一半能力。
+    /// 改动 <see cref="Create"/> 去容纳这个形状,等于给一条已验证的路径加分支。
+    /// </para>
+    /// <para>
+    /// 登记前的容量复核与 <see cref="Create"/> 走同一段代码(<see cref="Register"/>),
+    /// 故容量判定、Id 生成方式、计数语义三者在两条路径上只有一处实现。
+    /// </para>
+    /// </remarks>
+    /// <param name="image">待登记的图像,其像素数据已就绪。</param>
+    /// <returns>新对象的唯一 Id(32 位十六进制,无连字符)。</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="image"/> 为 <c>null</c>。</exception>
+    /// <exception cref="ImageCapacityExceededException">对象数或总字节数超出上限。</exception>
+    public string Add(ImageBuffer image)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        return Register(image);
+    }
+
+    /// <summary>
+    /// 登记一张已构造的图像:锁内复核容量、生成 Id、累加计数。两条创建路径的唯一汇合点。
+    /// </summary>
+    /// <remarks>
+    /// <b>不复用 <see cref="Create"/> 的「先无分配预检」那一段</b>:那张缓冲区在调用本方法之前
+    /// 就已经分配好了,预检无从谈起。此处只有一次锁内复核,作用是让并发登记之间不超限。
+    /// </remarks>
+    private string Register(ImageBuffer image)
+    {
         long byteLength = image.ByteLength;
 
         lock (_gate)
         {
-            // 预检到此处之间可能有并发创建,故必须复核
-            if (_entries.Count >= _limits.MaxImageCount)
-            {
-                throw new ImageCapacityExceededException(
-                    CapacityLimitKind.ImageCount, _limits.MaxImageCount, _entries.Count);
-            }
-
-            if (_totalBytes + byteLength > _limits.MaxTotalBytes)
-            {
-                throw new ImageCapacityExceededException(
-                    CapacityLimitKind.TotalBytes, _limits.MaxTotalBytes, _totalBytes + byteLength);
-            }
+            ThrowIfExceeded(byteLength);
 
             string id = Guid.NewGuid().ToString("N");
             var entry = new Entry(id, image, byteLength, _timeProvider.GetUtcNow());
@@ -185,6 +244,22 @@ public sealed class ImageBufferStore
             _totalBytes += byteLength;
             _createdCount++;
             return id;
+        }
+    }
+
+    /// <summary>锁内复核容量,超限即抛。调用方须已持有 <see cref="_gate"/>。</summary>
+    private void ThrowIfExceeded(long byteLength)
+    {
+        if (_entries.Count >= _limits.MaxImageCount)
+        {
+            throw new ImageCapacityExceededException(
+                CapacityLimitKind.ImageCount, _limits.MaxImageCount, _entries.Count);
+        }
+
+        if (_totalBytes + byteLength > _limits.MaxTotalBytes)
+        {
+            throw new ImageCapacityExceededException(
+                CapacityLimitKind.TotalBytes, _limits.MaxTotalBytes, _totalBytes + byteLength);
         }
     }
 

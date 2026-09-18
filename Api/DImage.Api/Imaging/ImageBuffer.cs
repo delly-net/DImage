@@ -443,6 +443,35 @@ public sealed class ImageBuffer
 
     // ————————————————————————— 校验与工具 —————————————————————————
 
+    /// <summary>
+    /// 在<b>不分配任何内存</b>的前提下,求出按该几何与格式构造缓冲区所需要的字节数,
+    /// 并顺带完成全部几何与上限校验。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 供「先预检、后分配」的调用方使用(如上传路径在解码前撞注册表容量)。
+    /// 返回值与随后的构造结果恒等 —— 校验规则与步长公式只有本类型一处实现,
+    /// 调用方<b>不得</b>自行重算一份,那等于让同一条规则有两个可能分叉的副本。
+    /// </para>
+    /// <para>
+    /// <b>可见性留在 <c>internal</c></b>:它是本类型自有缓冲区的分配口径,
+    /// 不是对外契约的一部分,故不进入公开 API。
+    /// </para>
+    /// </remarks>
+    /// <param name="width">宽度(像素)。</param>
+    /// <param name="height">高度(像素)。</param>
+    /// <param name="format">像素格式。</param>
+    /// <returns>所需字节数,等于 <c>MinStride * height</c>(含行尾填充)。</returns>
+    /// <exception cref="ArgumentOutOfRangeException">尺寸非法、超出 <see cref="ImageLimits"/> 上限,或格式未定义。</exception>
+    internal static long ComputeByteLength(int width, int height, PixelFormat format)
+    {
+        // 未知格式在 GetBytesPerPixel 内立即抛出,先于任何数值比较
+        int bytesPerPixel = format.GetBytesPerPixel();
+        int minStride = ValidateGeometry(width, height, bytesPerPixel);
+        ValidateTotalLength(minStride, height);
+        return (long)minStride * height;
+    }
+
     /// <summary>校验宽高合法性,返回紧排行字节数(<see cref="MinStride"/>)。</summary>
     /// <remarks>
     /// 尺寸乘积一律以 <c>long</c> 计算后再比较:在 <c>int</c> 下乘法会回绕成一个小正值,

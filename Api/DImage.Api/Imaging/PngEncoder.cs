@@ -11,7 +11,8 @@ namespace DImage.Api.Imaging;
 /// <b>为什么自研而非引入 ImageSharp / System.Drawing.Common</b>:本项目「后端零第三方业务依赖」
 /// 是既定原则,图像编解码正属于该原则覆盖的核心业务能力。PNG 的无损编码路径本身很短
 /// (签名 + 三个块 + 一个 deflate 流),引入数十 MB 的图形库只为写出无损 PNG 并不划算;
-/// 唯一真正需要自行实现的部分是 CRC-32 与 Adler-32 两个校验和,二者各约 20 行。
+/// 真正需要自行实现的部分只有两个校验和:CRC-32(已抽至 <see cref="Crc32"/>,供编解码共用)
+/// 与 Adler-32(留在本类型内,解码侧由 <c>ZLibStream</c> 负责),二者各约 20 行。
 /// </para>
 /// <para>
 /// <b>为什么在 <see cref="DeflateStream"/> 之外还要手写 zlib 头与 Adler-32</b>:
@@ -255,58 +256,6 @@ public static class PngEncoder
         Span<byte> crcBytes = stackalloc byte[4];
         BinaryPrimitives.WriteUInt32BigEndian(crcBytes, crc);
         destination.Write(crcBytes);
-    }
-
-    /// <summary>
-    /// CRC-32 校验(IEEE 802.3 多项式 <c>0xEDB88320</c> 的反射形式),PNG 各块共用。
-    /// </summary>
-    /// <remarks>
-    /// 表驱动实现:预生成 256 项查找表,每字节一次查表加异或,而非逐位循环 8 次。
-    /// 大图有数百 MB 数据要过 CRC,逐位实现会成为明显瓶颈。
-    /// </remarks>
-    private static class Crc32
-    {
-        private const uint Polynomial = 0xEDB88320u;
-
-        private static readonly uint[] Table = BuildTable();
-
-        private static uint[] BuildTable()
-        {
-            var table = new uint[256];
-            for (uint i = 0; i < 256; i++)
-            {
-                uint value = i;
-                for (int bit = 0; bit < 8; bit++)
-                {
-                    value = (value & 1) != 0 ? (value >> 1) ^ Polynomial : value >> 1;
-                }
-
-                table[i] = value;
-            }
-
-            return table;
-        }
-
-        /// <summary>计算两段连续字节(块类型 + 块数据)的 CRC-32。</summary>
-        public static uint Compute(ReadOnlySpan<byte> first, ReadOnlySpan<byte> second)
-        {
-            uint crc = 0xFFFFFFFFu;
-            crc = Accumulate(crc, first);
-            crc = Accumulate(crc, second);
-
-            // 输入反射、输出反射:初值与终值都要取反,否则结果与规范不符
-            return crc ^ 0xFFFFFFFFu;
-        }
-
-        private static uint Accumulate(uint crc, ReadOnlySpan<byte> data)
-        {
-            foreach (byte b in data)
-            {
-                crc = (crc >> 8) ^ Table[(crc ^ b) & 0xFF];
-            }
-
-            return crc;
-        }
     }
 
     /// <summary>
