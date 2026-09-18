@@ -26,6 +26,15 @@ public static class SkillService
     /// <summary>Skill 安装脚本的下载路径(根路径,匿名访问)。</summary>
     public const string InstallScriptPath = "/skill/install";
 
+    /// <summary>
+    /// <c>dimage-on</c> 技能执行时的**唯一可见输出**(一字不差,前后不附加任何内容)。
+    /// </summary>
+    /// <remarks>
+    /// 单独抽成常量而非内联进生成语句,是为了让它成为**可断言的事实源**:技能改造的核心契约
+    /// 就是「输出只有这一行」,而契约一旦只存在于一段拼接字符串里,验收只能靠模糊匹配。
+    /// </remarks>
+    public const string DimageOnLoadedNotice = "DImage工具包加载完成";
+
     /// <summary>技能内容的下载路径前缀(根路径,匿名访问),后接 <c>{skillKey}/content</c>。</summary>
     public const string SkillContentPathPrefix = "/skill/install";
 
@@ -281,10 +290,21 @@ public static class SkillService
     /// 生成「小D图像 MCP 能力总览」(dimage-on)的技能内容。
     /// </summary>
     /// <remarks>
-    /// 技能的唯一职责是<b>把服务能力输出到对话上下文</b>:内容即数据源,技能执行时不调用任何工具、
-    /// 不读任何文件。工具清单、参数表与副作用标注全部由 <paramref name="tools"/> 派生,
-    /// 且<b>不含生成时间戳</b> —— 同一服务版本必须产出逐字节相同的文本,否则「下载内容与接口返回一致」
-    /// 这类断言将失去意义。
+    /// <para>
+    /// <b>技能的唯一职责是把服务能力注入对话上下文,且不在对话中回显</b>。技能被调用时,
+    /// 客户端会把本 <c>SKILL.md</c> <b>正文整体注入上下文</b> —— 于是正文本身就是数据源,
+    /// 技能执行时不需要调用任何工具、不读任何文件;模型只需回一行
+    /// <see cref="DimageOnLoadedNotice"/>。
+    /// </para>
+    /// <para>
+    /// 因此正文只承载<b>MCP 信息本体</b>(服务接入、能力清单与参数表),不承载叙述性说明:
+    /// 早先的「典型工作流」「注意事项」两节已移除 —— 它们不进上下文也无损能力,却让每次加载
+    /// 都多背一段与当前任务无关的长文。
+    /// </para>
+    /// <para>
+    /// 工具清单与参数表全部由 <paramref name="tools"/> 派生,且<b>不含生成时间戳</b> ——
+    /// 同一服务版本必须产出逐字节相同的文本,否则「下载内容与接口返回一致」这类断言将失去意义。
+    /// </para>
     /// </remarks>
     public static string GenerateDimageOnSkillContent(
         IEnumerable<McpServerTool> tools,
@@ -310,8 +330,8 @@ public static class SkillService
 
         sb.AppendLine("# 小D图像 MCP 能力总览");
         sb.AppendLine();
-        sb.AppendLine("此技能把 DImage 服务当前提供的**全部图像处理 MCP 能力**一次性输出到对话上下文,");
-        sb.AppendLine("便于确认「这台服务现在能画什么、每项能力怎么调、参数怎么填」。");
+        sb.AppendLine("此技能把 DImage 服务当前提供的**全部图像处理 MCP 能力**一次性加载到对话上下文");
+        sb.AppendLine("(服务端工具/参数已随本技能注入,无需再查),便于确认「这台服务现在能画什么、每项能力怎么调、参数怎么填」。");
         sb.AppendLine();
 
         sb.AppendLine("## 使用方法");
@@ -320,16 +340,20 @@ public static class SkillService
         sb.AppendLine($"/{SkillCatalog.DimageOnName}");
         sb.AppendLine("```");
         sb.AppendLine();
-        sb.AppendLine("或在聊天中输入「输出图像能力清单」触发。");
+        sb.AppendLine("或在聊天中输入「加载图像工具包」触发。");
         sb.AppendLine();
 
         sb.AppendLine("## 执行要求(务必照做)");
         sb.AppendLine();
-        sb.AppendLine("1. **本技能内容即数据源**:不要调用任何 MCP 工具、不要读取本地文件、不要联网检索 ——");
-        sb.AppendLine("   下文「服务接入」「能力清单」「典型工作流」「注意事项」四节就是需要输出的全部内容。");
-        sb.AppendLine("2. **原样完整输出**上述四节:逐项列出每个工具,不得只列工具名、不得省略参数行、不得改写参数名。");
-        sb.AppendLine($"3. 输出后补一句说明:本清单是**技能下载时的快照**(服务 {serviceName} {serviceVersion},"
-            + $"共 {protocolTools.Length} 项工具);服务新增工具后需重新下载本技能才会同步。");
+        sb.AppendLine("1. **本技能正文即数据源,已被自动注入上下文**:不要调用任何 MCP 工具、不要读取本地文件、不要联网检索 ——");
+        sb.AppendLine("   下文「服务接入」「能力清单」两节就是被加载的全部内容。");
+        sb.AppendLine("2. **不要在对话中复述本技能正文**:不列工具名、不列参数表、不贴配置片段、不给摘要或统计表格。");
+        sb.AppendLine("3. **只输出下面这一行,前后不附加任何其他文字**(不加工具数量、不加快照说明、不加引导语):");
+        sb.AppendLine();
+        sb.AppendLine("```");
+        sb.AppendLine(DimageOnLoadedNotice);
+        sb.AppendLine("```");
+        sb.AppendLine("4. 无论以何种方式触发(显式调用或聊天触发),本技能的输出恒为上述一行。");
         sb.AppendLine();
 
         // —————————————— 服务接入 ——————————————
@@ -380,33 +404,8 @@ public static class SkillService
             sb.AppendLine();
         }
 
-        // —————————————— 典型工作流 ——————————————
-        sb.AppendLine("## 典型工作流");
-        sb.AppendLine();
-        sb.AppendLine("1. `image_create` 创建画布,拿到 `id`;");
-        sb.AppendLine("2. 用 `image_draw_*` 绘制形状(SVG 路径、多边形、椭圆、矩形、折线),或 `image_set_pixels` 逐点写像素;");
-        sb.AppendLine("3. `image_download_png` 取回 PNG(以图像内容块返回,不提供下载链接);");
-        sb.AppendLine("4. `image_release` 释放 `id`。");
-        sb.AppendLine();
-
-        // —————————————— 注意事项 ——————————————
-        sb.AppendLine("## 注意事项");
-        sb.AppendLine();
-        sb.AppendLine("- **绘制工具非幂等**:抗锯齿下重复绘制同一形状会加深半覆盖像素,不要以「重试」的方式重画。");
-        sb.AppendLine("- **越界语义两种并存**:`image_set_pixels` 任一点越界即整批拒绝(零写入);"
-            + "`image_draw_*` 的坐标若为有限值且量级合法但落在画布外,则裁剪到画布内正常绘制并返回 `ok:true`。");
-        sb.AppendLine("- **失败以结构化结果返回**:`{ ok:false, code, message }`,常见 `code`:"
-            + "`invalid_dimension` / `invalid_format` / `invalid_color` / `image_not_found` / "
-            + "`pixel_out_of_range` / `capacity_exceeded` / `invalid_geometry` / `invalid_stroke_width` / "
-            + "`invalid_fill_rule` / `invalid_path` / `limit_exceeded`。");
-        sb.AppendLine("- **颜色格式**:`#RRGGBB` 或 `#RRGGBBAA`(大小写不敏感,必须带 `#`)。");
-        sb.AppendLine("- **角度约定**:椭圆的 `start_angle` / `end_angle` 以**度**为单位,`0°` 指向 `+x` 轴,"
-            + "角度增大方向为**顺时针**(与屏幕坐标系一致,与数学课本相反)。");
-        sb.AppendLine("- **id 生命周期**:图像存于服务端内存注册表,空闲超时或服务重启后失效,"
-            + "再次访问返回 `image_not_found`;用完请显式释放。");
-        sb.AppendLine("- **注册表有容量上限**:单进程内对象数与总字节数均有上限,超限的创建请求直接失败(不会驱逐已有对象)。");
-        sb.AppendLine("- **多实例下 id 不共享**:注册表为进程级,水平扩容后不同实例上的 `id` 互不可见。");
-        sb.AppendLine();
+        // 刻意不生成「典型工作流」「注意事项」两节:它们不进上下文也无损能力,
+        // 却让每次技能加载都多背一段与当前任务无关的长文。工具用法一律以工具自身的 description 为准。
 
         return ToLf(sb.ToString());
     }

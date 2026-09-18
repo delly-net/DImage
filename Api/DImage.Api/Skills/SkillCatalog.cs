@@ -24,7 +24,12 @@ public static class SkillCatalog
     public const string DimageOnName = "dimage-on";
 
     /// <summary>「小D图像 MCP 能力总览」技能描述(供管理端清单与安装脚本展示)。</summary>
-    public const string DimageOnDescription = "将小D图像服务的全部图像处理 MCP 能力输出到对话上下文";
+    /// <remarks>
+    /// 用词为<b>「加载到」而非「输出到」</b>:技能正文被注入上下文,但<b>不在对话中回显</b>
+    /// (唯一可见输出是 <see cref="SkillService.DimageOnLoadedNotice"/>)。描述里写「输出」会与
+    /// 技能的实际行为相悖 —— 而本串同时进 SKILL.md frontmatter,正是客户端判断「何时该用本技能」的依据。
+    /// </remarks>
+    public const string DimageOnDescription = "将小D图像服务的全部图像处理 MCP 能力加载到对话上下文";
 
     /// <summary>
     /// 项目 Skill 定义清单(key / 技能名 / 描述),供安装脚本与管理端清单复用。
