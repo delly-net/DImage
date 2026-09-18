@@ -1,5 +1,8 @@
 using DImage.Api.Auth;
 using DImage.Api.Endpoints;
+using DImage.Api.Hosting;
+using DImage.Api.Imaging;
+using DImage.Api.Mcp;
 using DImage.Api.Options;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -54,6 +57,29 @@ builder.Services.AddAuthorization(options =>
     });
 });
 
+// 内存图像注册表:上限从配置读取,缺省值一律回落到 Imaging 层定义的常量 ——
+// 「默认值写在 C# 初始值上」是硬约定,配置文件缺失或键名写错时上限必须依然存在,
+// 否则一次部署疏漏就会让 /mcp 变成一个没有上限的内存放大器
+var registrySection = builder.Configuration.GetSection("ImageRegistry");
+var registryLimits = new ImageRegistryLimits(
+    MaxImageCount: registrySection.GetValue<int?>("MaxImageCount") ?? ImageRegistryLimits.DefaultMaxImageCount,
+    MaxTotalBytes: registrySection.GetValue<long?>("MaxTotalBytes") ?? ImageRegistryLimits.DefaultMaxTotalBytes,
+    IdleTtl: registrySection.GetValue<TimeSpan?>("IdleTtl") ?? ImageRegistryLimits.DefaultIdleTtl);
+
+// ImageRegistryLimits 是 readonly record struct,不能作为 AddSingleton<TService> 的类型参数
+// (该重载要求 TService : class),故经工厂注册 —— 顺带把上限的构造时机固定在启动期
+builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
+builder.Services.AddSingleton(sp => new ImageBufferStore(registryLimits, sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddHostedService<ImageBufferReaper>();
+
+// MCP 服务端:默认无状态 Streamable HTTP 传输。
+// 刻意不启用 EnableLegacySse —— 那是一条仅用于兼容旧客户端的废弃路径,
+// 开启等于把一个额外的公网入口挂在 /mcp 上,而本项目没有任何客户端依赖它。
+builder.Services
+    .AddMcpServer()
+    .WithHttpTransport()
+    .WithTools<ImageTools>();
+
 var app = builder.Build();
 
 // 启动时即刻解析凭据:凭据是单例,若无人请求则不会实例化,
@@ -85,7 +111,9 @@ app.MapGet("/", () => Results.Ok(new
         "GET /api/v1/ping",
         "POST /api/v1/auth/token",
         "POST /api/v1/mcp/verify",
-        "GET /api/v1/mcp/tools"
+        "GET /api/v1/mcp/tools",
+        // 该清单无自动生成机制,新增端点必须手工同步,否则服务元信息与实际接口清单不一致
+        "POST /mcp"
     }
 }))
 .WithName("GetServiceInfo")
@@ -112,5 +140,10 @@ api.MapGet("/ping", () => Results.Ok(new { message = "pong" }))
 app.MapAuthEndpoints();
 app.MapMcpEndpoints();
 app.MapMcpToolsEndpoints();
+
+// MCP 协议端点(Streamable HTTP)。授权策略必须显式指定 McpAccess:
+// 不写的话会落到默认的 JwtBearer 方案上,而 MCP 客户端持有的是静态 TOKEN,
+// 表现为「TOKEN 正确却始终 401」。MapMcp 返回 IEndpointConventionBuilder,故可链式挂策略。
+app.MapMcp("/mcp").RequireAuthorization(AuthConstants.Policies.McpAccess);
 
 app.Run();

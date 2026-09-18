@@ -10,6 +10,17 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.12" />
+
+    <!--
+      MCP 官方 C# SDK:对外暴露 POST /mcp 的 Streamable HTTP 传输与工具注册能力。
+      这是本项目「后端零第三方业务依赖」原则的**首个显式例外**,理由:
+        1. MCP 是模型与工具之间的**标准协议**,手写 JSON-RPC + 传输层等于自行维护一份协议实现,
+           协议小幅修订就会静默失配(客户端握手失败、工具清单为空),成本远高于引依赖;
+        2. 该包为**官方实现**(modelcontextprotocol/csharp-sdk),Apache-2.0,许可无虞;
+        3. nuspec 明确提供 **net10.0** 目标框架组,与本项目 TFM 匹配,不引入跨框架兼容负担。
+      业务逻辑(图像编解码、像素写入)仍为自研零依赖,SDK 只承担协议与传输。
+    -->
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
   </ItemGroup>
 
 </Project>
