@@ -8,7 +8,7 @@ using ModelContextProtocol.Server;
 namespace DImage.Api.Mcp;
 
 /// <summary>
-/// 绘制与合成能力的七项 MCP 工具:直线/折线、矩形、椭圆/扇形、多边形、SVG 路径、文字、图像合成。
+/// 绘制、合成与裁切能力的八项 MCP 工具:直线/折线、矩形、椭圆/扇形、多边形、SVG 路径、文字、图像合成、图像裁切。
 /// </summary>
 /// <remarks>
 /// <para>
@@ -49,6 +49,23 @@ namespace DImage.Api.Mcp;
 ///   <item><description><b>不透明度走的是覆盖率插值,不是标准 <c>source-over</c></b>,
 ///   与六项绘制工具共用同一份混合实现(Alpha 通道一并插值)。详见 <c>ImageBlend</c> 的类型注释 ——
 ///   它是本能力域最容易被「顺手修正」而实际造成前后不一致的一处。</description></item>
+/// </list>
+/// </para>
+/// <para>
+/// <b><c>image_crop</c> 是第八项工具,也是本类型里唯一「读一张图、产出另一张图且不动源图」的工具</b>,
+/// 与其余七项在三个方向上都不同,改动前务必先读懂:
+/// <list type="bullet">
+///   <item><description><b>源图逐字节不变</b>,返回的是<b>新对象</b>的 Id。故本工具的
+///   <c>Destructive</c> 为 <c>false</c> —— 与 <c>image_composite</c> 恰好相反(后者就地改目标图)。
+///   但它<b>不置 <c>Idempotent</c></b>:每次调用都会新建一个对象并占用容量,重试会产生多个副本
+///   (与 <c>image_create</c> / <c>image_upload</c> 同);</description></item>
+///   <item><description><b>区域可以是矩形或 SVG 路径,二者互斥且必须二选一</b>:
+///   同时给出、都不给、或只给矩形的一部分分量都返回 <c>invalid_geometry</c>。
+///   矩形四个分量是<b>整数</b> —— 整数对齐让覆盖率恒为 0 或 1,从而走行级字节搬运的快路径;
+///   路径区域则逐像素求覆盖率(与绘制共用同一份实现,见 <c>ShapeRasterizer.AccumulateFill</c>);</description></item>
+///   <item><description><b>输出画布由 <c>to_bounds</c> 决定</b>:默认 <c>false</c> 保持源图尺寸
+///   (裁切结果与源图坐标重合,可直接与其它工具叠加),<c>true</c> 收缩到区域包围盒。
+///   被裁掉的部分置 0,输出格式恒等于源图格式 —— <b>不引入任何隐式格式转换</b>。</description></item>
 /// </list>
 /// </para>
 /// <para>
@@ -114,6 +131,20 @@ public sealed class ShapeTools(ImageBufferStore store)
     /// <summary>不透明度非法:非有限值,或落在 <c>[0, 1]</c> 之外。</summary>
     private const string CodeInvalidOpacity = "invalid_opacity";
 
+    /// <summary>
+    /// 输出尺寸非法:小于等于 0、超出单边上限或超出像素总数上限。
+    /// </summary>
+    /// <remarks>
+    /// <b>与 <see cref="ImageTools"/> 中的同名常量逐字相同</b>,且刻意保持两份而不提到公共基类:
+    /// 错误码的归属应由「谁会抛出它」决定,而把常量搬出去就要动 <see cref="ImageTools"/> 的类形态 ——
+    /// 那是一条已被验收过的契约代码。这与 <see cref="CodeImageNotFound"/> 已在两个工具类各有定义
+    /// 是同一处置(见类注释)。
+    /// </remarks>
+    private const string CodeInvalidDimension = "invalid_dimension";
+
+    /// <summary>注册表容量超限。同样与 <see cref="ImageTools"/> 中的同名常量逐字相同。</summary>
+    private const string CodeCapacityExceeded = "capacity_exceeded";
+
     /// <summary>默认填充规则名。</summary>
     private const string DefaultFillRuleName = "nonzero";
 
@@ -159,6 +190,40 @@ public sealed class ShapeTools(ImageBufferStore store)
     /// </remarks>
     private const string CompositeRetryNote =
         "非幂等:半透明叠加重复执行会逐次逼近源图颜色(同 Id 自合并亦然),重试前请先 image_release 重建。";
+
+    // image_crop 的说明。与上面两组分开的理由同上:它们各自描述的语义(「源图不变、返回新对象」
+    // 「区域二选一」「输出画布两种模式」)在其余七项工具里都不存在,照搬任何一句都会与行为对不上。
+    // 同样拆成常量而非内联,以便逐句校对 —— 描述字符串是对外契约的一部分。
+
+    /// <summary>裁切工具的「源图不变」说明。</summary>
+    private const string CropNewImageNote =
+        "源图不会被修改:本工具生成一张新的内存图像并返回其 id,"
+        + "返回的 id 需在后续调用中传入,用完请调用 image_release 释放。";
+
+    /// <summary>裁切工具的区域选择说明。</summary>
+    private const string CropRegionNote =
+        "裁切区域二选一:矩形用 x/y/width/height(四个整数须全给、x 与 y 须 >= 0、宽高须 > 0),"
+        + "任意形状用 SVG 路径 d;两者互斥,同时给出或都不给均返回 invalid_geometry。";
+
+    /// <summary>裁切工具的输出画布说明。</summary>
+    private const string CropCanvasNote =
+        "to_bounds 决定输出画布:false(默认)保持源图尺寸,裁切区域外的部分置 0;"
+        + "true 收缩到裁切区域的包围盒(取整后),区域超出源图的部分同样置 0。";
+
+    /// <summary>裁切工具的保留语义说明。</summary>
+    private const string CropKeepNote =
+        "保留语义:输出格式恒等于源图格式(不做格式转换),被裁掉的部分按源格式置 0"
+        + "(gray8/rgb24/bgr24 下表现为黑色,rgba32/bgra32 下表现为全透明);"
+        + "路径区域边界按覆盖率保留(抗锯齿),描边与填充规则仅对 path 生效。";
+
+    /// <summary>裁切工具的越界说明。</summary>
+    private const string CropClipNote =
+        "越界裁剪:裁切区域超出源图的部分被丢弃并返回成功,不报错(与 image_set_pixels 的越界即拒绝相反);"
+        + "区域完全落在源图外时返回 ok 且 kept 为 0。";
+
+    /// <summary>裁切工具的幂等性说明。</summary>
+    private const string CropRetryNote =
+        "非幂等:每次调用都会新建一个图像对象并占用容量,重试会产生多张副本,不想留下请先 image_release。";
 
     // —————————————————————— 工具 1:直线 / 折线 ——————————————————————
 
@@ -524,6 +589,119 @@ public sealed class ShapeTools(ImageBufferStore store)
         return ExecuteComposite(target_id, source_id, style);
     }
 
+    // —————————————————————— 工具 8:图像裁切 ——————————————————————
+
+    /// <summary>
+    /// 按一个区域裁切指定图像,生成一张新的内存图像并返回其唯一 Id。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>区域的两个形态在此互斥判定</b>,而不是在注册表或算法层:只有工具层同时见得到
+    /// 「用户究竟传了哪几个参数」,<c>null</c> 与「未传」在这一层才可分。注册表拿到的必须已经是
+    /// 一个确定无疑的 <see cref="Shape"/>,否则「既没给矩形也没给路径」这种输入就得由算法层去猜。
+    /// </para>
+    /// <para>
+    /// <b>矩形分量用 <c>int?</c> 而非 <c>double?</c></b>:整数对齐是快路径成立的前提(见
+    /// <see cref="ImageCropper"/>),若允许小数,行级字节搬运就无法表达部分覆盖率,
+    /// 会产生「参数看着合理、结果悄悄粗糙」的错误。需要亚像素边界请改用 <c>path</c>。
+    /// </para>
+    /// <para>
+    /// <b><c>fill_rule</c> 只在路径区域下被解析</b>:矩形区域的覆盖率恒为 0 或 1,与填充规则无关。
+    /// 对矩形传入一个非法的 <c>fill_rule</c> 因此不会报错 —— 这是刻意的:
+    /// 该参数在此路径上不参与任何判定,拿它报错等于让调用方去修一个不影响结果的字段。
+    /// </para>
+    /// </remarks>
+    /// <param name="id">源图像 Id,<b>不会被修改</b>。</param>
+    /// <param name="x">矩形区域左上角横坐标,须为大于等于 0 的整数;与 <paramref name="path"/> 互斥。</param>
+    /// <param name="y">矩形区域左上角纵坐标,须为大于等于 0 的整数;与 <paramref name="path"/> 互斥。</param>
+    /// <param name="width">矩形区域宽度,须为大于 0 的整数;与 <paramref name="path"/> 互斥。</param>
+    /// <param name="height">矩形区域高度,须为大于 0 的整数;与 <paramref name="path"/> 互斥。</param>
+    /// <param name="path">SVG path 的 <c>d</c> 字符串,作为裁切区域;与矩形参数互斥。</param>
+    /// <param name="fill_rule">填充规则名,仅对 <paramref name="path"/> 生效。</param>
+    /// <param name="antialias">是否抗锯齿,仅对 <paramref name="path"/> 生效。</param>
+    /// <param name="to_bounds">是否把输出画布收缩到裁切区域的包围盒。</param>
+    [McpServerTool(
+        Name = "image_crop",
+        Title = "裁切图像",
+        Destructive = false,
+        OpenWorld = false)]
+    [Description(
+        "按 id 用一个区域裁切内存图像,生成一张新的图像并返回其唯一 id。"
+        + CropNewImageNote + CropRegionNote + CropCanvasNote + CropKeepNote + CropClipNote + CropRetryNote
+        + "成功返回 {ok,id,source_id,width,height,format,stride,byteLength,kept}。")]
+    public CallToolResult Crop(
+        [Description("image_create 或 image_upload 返回的图像 id(源图,不会被修改)")]
+        string? id,
+        [Description("矩形裁切区域左上角横坐标,须为 >= 0 的整数;与 path 互斥")]
+        int? x = null,
+        [Description("矩形裁切区域左上角纵坐标,须为 >= 0 的整数;与 path 互斥")]
+        int? y = null,
+        [Description("矩形裁切区域宽度,须为 > 0 的整数;与 path 互斥")]
+        int? width = null,
+        [Description("矩形裁切区域高度,须为 > 0 的整数;与 path 互斥")]
+        int? height = null,
+        [Description("SVG path 的 d 字符串,作为任意形状的裁切区域,如 \"M0 0 L10 0 L10 10 Z\";与矩形参数互斥")]
+        string? path = null,
+        [Description("填充规则,取 nonzero(默认)或 evenodd,大小写不敏感;仅对 path 生效")]
+        string? fill_rule = DefaultFillRuleName,
+        [Description("是否抗锯齿,默认 true;关闭后区域边界像素只有保留或全裁两种状态;仅对 path 生效")]
+        bool antialias = true,
+        [Description("是否把输出画布收缩到裁切区域的包围盒,默认 false(保持源图尺寸)")]
+        bool to_bounds = false)
+    {
+        // 「传了路径」以 path 非 null 判定,而非 IsNullOrEmpty:
+        // 空串是一个语法错误的 d,交给解析器报 invalid_path 比报「必须二选一」更能指向真正的问题
+        bool hasPath = path is not null;
+
+        // 判定「传了矩形」用「任一分量非空」而非「四个都非空」:
+        // 后者会把「只给了 x 和 y」误判成「没给区域」,报出误导性的「必须二选一」
+        bool hasRect = x is not null || y is not null || width is not null || height is not null;
+
+        if (hasPath && hasRect)
+        {
+            return Error(
+                CodeInvalidGeometry,
+                "path 与矩形参数 (x/y/width/height) 互斥,不能同时给出:"
+                + $"矩形参数传了 {DescribeRectParams(x, y, width, height)},path 传了 {Describe(path)}。"
+                + "请只保留其中一种区域写法。");
+        }
+
+        if (!hasPath && !hasRect)
+        {
+            return Error(
+                CodeInvalidGeometry,
+                "必须给出裁切区域:矩形用 x/y/width/height(四个整数须全给),"
+                + "任意形状用 path(SVG 的 d 字符串),二者只能选其一。实际四者均为 null。");
+        }
+
+        Shape region;
+        FillRule parsedFillRule = FillRule.NonZero;
+
+        if (hasRect)
+        {
+            if (BuildRect(x, y, width, height) is { } rectError)
+            {
+                return rectError;
+            }
+
+            region = new RectShape(x!.Value, y!.Value, width!.Value, height!.Value);
+        }
+        else
+        {
+            if (!FillRuleExtensions.TryParseFillRule(fill_rule, out parsedFillRule))
+            {
+                return InvalidFillRule(fill_rule);
+            }
+
+            region = new PathShape(path!);
+        }
+
+        // 三个实参均取自校验后的值;此处必须走主构造函数(部分具名实参即命中),
+        // 写字面量为空的 new CropStyle() 会命中编译器合成的无参构造函数并静默关掉抗锯齿
+        var style = new CropStyle(parsedFillRule, antialias, to_bounds);
+        return ExecuteCrop(id, region, style);
+    }
+
     // —————————————————————— 执行与映射 ——————————————————————
 
 
@@ -613,6 +791,154 @@ public sealed class ShapeTools(ImageBufferStore store)
         {
             return Error(CodeInvalidGeometry, ex.Message);
         }
+    }
+
+    /// <summary>
+    /// 裁切的执行与映射:委托注册表<b>四段式</b>完成(求布局 → 预检容量 → 搬像素 → 登记),
+    /// 把全部失败形态映射为对外错误码。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 与 <see cref="Execute"/> / <see cref="ExecuteComposite"/> 分开而非合并,理由同前两者:
+    /// 裁切没有颜色、没有线宽、没有变换矩阵,也就永远不会抛
+    /// <c>InvalidStrokeWidthException</c> / <c>InvalidScaleException</c> / <c>InvalidOpacityException</c>;
+    /// 但它<b>独有</b> <see cref="ImageCapacityExceededException"/> 与
+    /// <see cref="ArgumentOutOfRangeException"/> 两种失败 —— 只有它会分配一张新图。
+    /// 把三套 <c>catch</c> 合成一个大的,会让每条路径上都出现永远不可能命中的分支。
+    /// </para>
+    /// <para>
+    /// <b>Id 为空的判定在此完成</b>(而非由调用方),因为它是唯一一个所有工具共有的前置条件。
+    /// </para>
+    /// </remarks>
+    private CallToolResult ExecuteCrop(string? id, Shape region, CropStyle style)
+    {
+        if (string.IsNullOrEmpty(id))
+        {
+            return Error(CodeImageNotFound, $"id 不能为空(实际 {(id is null ? "null" : "空串")})。");
+        }
+
+        try
+        {
+            CropOutcome outcome = store.Crop(id, region, style);
+
+            return Ok(new CropResult(
+                Ok: true,
+                Id: outcome.Id,
+                SourceId: id,
+                Width: outcome.Width,
+                Height: outcome.Height,
+                Format: PixelFormatText.FormatNameOf(outcome.Format),
+                Stride: outcome.Stride,
+                ByteLength: outcome.ByteLength,
+                Kept: outcome.Kept));
+        }
+        catch (ImageNotFoundException ex)
+        {
+            return Error(CodeImageNotFound, ex.Message);
+        }
+        catch (InvalidGeometryException ex)
+        {
+            return Error(CodeInvalidGeometry, ex.Message);
+        }
+        catch (PathSyntaxException ex)
+        {
+            return Error(CodeInvalidPath, ex.Message);
+        }
+        catch (DrawingLimitExceededException ex)
+        {
+            return Error(CodeLimitExceeded, ex.Message);
+        }
+        catch (InvalidFillRuleException ex)
+        {
+            return Error(CodeInvalidFillRule, ex.Message);
+        }
+        catch (ImageCapacityExceededException ex)
+        {
+            return Error(CodeCapacityExceeded, ex.Message);
+        }
+        catch (ArgumentOutOfRangeException ex)
+        {
+            // 输出尺寸校验的唯一权威是 ImageLimits / ImageBuffer,此处只做翻译。
+            // 与 image_create 同规:重复实现一套尺寸校验必然会与构造期校验逐渐分叉。
+            // 上列各异常均直接派生自 Exception(彼此无继承关系),故 catch 的顺序不影响归属
+            return Error(CodeInvalidDimension, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 校验矩形区域的四个分量;任一项非法时返回对外的失败结果(否则返回 <c>null</c>)。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>四个分量必须全给</b>:只给 <c>x</c>/<c>y</c> 而没有宽高,或只给宽高而没有原点,
+    /// 都无法确定一个区域。此处不做任何「缺省补 0」的兜底 —— 补出来的区域看起来总能算出结果,
+    /// 而调用方无从知道它拿到的不是自己要求的那个。
+    /// </para>
+    /// <para>
+    /// <b>只拒绝负的原点与非正的宽高,不拒绝区域跑到源图外</b>:后者是裁剪语义(见类注释),
+    /// 由 <c>ImageCropper</c> 与源图求交处理,返回成功。
+    /// </para>
+    /// </remarks>
+    private static CallToolResult? BuildRect(int? x, int? y, int? width, int? height)
+    {
+        if (x is null || y is null || width is null || height is null)
+        {
+            return Error(
+                CodeInvalidGeometry,
+                "矩形裁切区域必须同时给出 x、y、width、height 四个整数"
+                + $"(缺任何一个都无法确定区域),实际 {DescribeRectParams(x, y, width, height)}。");
+        }
+
+        if (x < 0 || y < 0)
+        {
+            return Error(
+                CodeInvalidGeometry,
+                "矩形裁切区域的左上角坐标不能为负"
+                + $"(区域可以超出源图的右下边界,但不能以负坐标起算),实际 x={x},y={y}。");
+        }
+
+        if (width <= 0 || height <= 0)
+        {
+            return Error(
+                CodeInvalidGeometry,
+                $"矩形裁切区域的宽高必须大于 0,实际 width={width},height={height}。");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 把矩形四分量渲染成便于定位的形态:只列出非空的项,四项皆空时明说「未给」。
+    /// </summary>
+    /// <remarks>
+    /// 错误消息里若只写「缺少 width」,调用方看不出其余三项传了什么;而若把 null 一律渲染成
+    /// <c>null</c>,一条「只传了 x」的报错里会出现三个 <c>null</c>,反而淹没了真正的信息。
+    /// </remarks>
+    private static string DescribeRectParams(int? x, int? y, int? width, int? height)
+    {
+        var present = new List<string>(4);
+
+        if (x is not null)
+        {
+            present.Add($"x={x}");
+        }
+
+        if (y is not null)
+        {
+            present.Add($"y={y}");
+        }
+
+        if (width is not null)
+        {
+            present.Add($"width={width}");
+        }
+
+        if (height is not null)
+        {
+            present.Add($"height={height}");
+        }
+
+        return present.Count == 0 ? "四者均未给" : string.Join(", ", present);
     }
 
     /// <summary>
@@ -782,3 +1108,44 @@ public sealed record CompositeResult(
     [property: JsonPropertyName("target_id")] string TargetId,
     [property: JsonPropertyName("source_id")] string SourceId,
     [property: JsonPropertyName("covered")] int Covered);
+
+/// <summary>
+/// <c>image_crop</c> 的成功结果:
+/// <c>{ ok, id, source_id, width, height, format, stride, byteLength, kept }</c>。
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>两个 Id 都要给,且语义固定</b>:<see cref="Id"/> 是<b>新</b>对象(后续调用的目标),
+/// <see cref="SourceId"/> 是被裁的那张(仍在注册表里、逐字节未变)。只报一个 <c>id</c>
+/// 会让调用方分不清该拿哪一个继续 —— 而这正是本工具与其余七项最大的不同:
+/// 它<b>不在原地改</b>,返回的 Id 与传入的 Id 不是同一个。
+/// </para>
+/// <para>
+/// <b>元信息一并给出,与 <c>image_create</c> / <c>image_upload</c> 同形</b>:
+/// 裁切往往会改变尺寸(尤其 <c>to_bounds=true</c>),调用方需要立刻知道新画布多大,
+/// 才好安排后续的绘制坐标;否则就得再调一次来问。格式恒等于源图,一并报出以便直接复用。
+/// </para>
+/// </remarks>
+/// <param name="Ok">恒为 <c>true</c>。</param>
+/// <param name="Id"><b>新</b>对象的标识 —— 源图未被修改,这个 Id 才是后续调用的目标。</param>
+/// <param name="SourceId">被裁切的源图标识,调用后仍然有效。</param>
+/// <param name="Width">新对象宽度(像素)。</param>
+/// <param name="Height">新对象高度(像素)。</param>
+/// <param name="Format">新对象格式名(小写),恒等于源图格式。</param>
+/// <param name="Stride">新对象行步长(字节)。</param>
+/// <param name="ByteLength">新对象有效像素字节数。</param>
+/// <param name="Kept">
+/// 被写入过(覆盖率大于 0 且源坐标落在源图内)的像素数;
+/// 裁切区域完全落在源图外时为 <c>0</c>,且此时仍返回成功 ——
+/// 「裁到画布外」是裁剪语义,不是失败。路径区域的边界像素按覆盖率部分保留,同样计入。
+/// </param>
+public sealed record CropResult(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("source_id")] string SourceId,
+    [property: JsonPropertyName("width")] int Width,
+    [property: JsonPropertyName("height")] int Height,
+    [property: JsonPropertyName("format")] string Format,
+    [property: JsonPropertyName("stride")] int Stride,
+    [property: JsonPropertyName("byteLength")] long ByteLength,
+    [property: JsonPropertyName("kept")] int Kept);

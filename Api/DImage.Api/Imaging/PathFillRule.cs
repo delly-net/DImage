@@ -32,7 +32,7 @@ public enum FillRule
 /// <see cref="FillRule"/> 的名称解析与规范化。
 /// </summary>
 /// <remarks>
-/// 与 <c>ImageTools.TryParseFormat</c> 同样的理由:<b>刻意不用
+/// 与 <c>PixelFormatText.TryParseFormat</c> 同样的理由:<b>刻意不用
 /// <see cref="Enum.TryParse{TEnum}(string, bool, out TEnum)"/></b> —— 它对数字串同样返回成功,
 /// <c>"1"</c> 会被解析成 <see cref="FillRule.EvenOdd"/>,<c>"99"</c> 会解析出一个根本不存在的枚举值,
 /// 而未知枚举值一旦流进光栅化器,表现是「整幅图零覆盖率」这类没有任何告警的静默错误。

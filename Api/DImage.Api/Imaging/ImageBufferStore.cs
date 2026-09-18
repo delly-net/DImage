@@ -47,6 +47,25 @@ public readonly record struct ImageStoreStats(
     long ReapedCount);
 
 /// <summary>
+/// 一次裁切的结果快照:新对象的元信息与被写入的像素数。
+/// </summary>
+/// <param name="Id"><b>新</b>对象的标识 —— 注意不是源图 Id。</param>
+/// <param name="Width">新对象宽度(像素)。</param>
+/// <param name="Height">新对象高度(像素)。</param>
+/// <param name="Format">新对象像素格式,恒等于源图格式。</param>
+/// <param name="Stride">新对象行步长(字节)。本注册表创建的对象恒为紧排。</param>
+/// <param name="ByteLength">新对象有效像素字节数。</param>
+/// <param name="Kept">被写入过(覆盖率大于 0 且源坐标落在源图内)的像素数。</param>
+public readonly record struct CropOutcome(
+    string Id,
+    int Width,
+    int Height,
+    PixelFormat Format,
+    int Stride,
+    long ByteLength,
+    int Kept);
+
+/// <summary>
 /// 线程安全的内存图像注册表:图像对象按唯一 Id 登记,所有像素读写与编码导出均经本类型完成。
 /// </summary>
 /// <remarks>
@@ -73,11 +92,14 @@ public readonly record struct ImageStoreStats(
 ///   <item><description>按 <b>Id 的序数序</b>(<see cref="string.CompareOrdinal(string, string)"/>)
 ///   决定先后,使 A→B 与 B→A 两次调用取得一致的加锁顺序。若改用「先目标后源」这类按角色排序,
 ///   两个方向相反的并发合成就会各持一把、互等对方 —— 经典的 ABBA 死锁;</description></item>
-///   <item><description><b>绝不在持有条目锁时再去取 <see cref="_gate"/></b>。本方法因此全程不碰全局锁:
-///   否则「持条目锁等全局锁」与 <see cref="Reap"/> 的「持全局锁等条目锁」
-///   恰好构成上述死锁的另一个实例,而这一个连加锁顺序都救不了。</description></item>
+///   <item><description><b>绝不在持有条目锁时再去取 <see cref="_gate"/></b>。
+///   <see cref="Composite"/> 因此全程不碰全局锁;而 <see cref="Crop"/> 既要读源图像素、又要判定容量,
+///   无法回避全局锁,故改为<b>四段式:两把锁错开持有,任何时刻只持有一把</b>(详见其方法注释)。
+///   否则「持条目锁等全局锁」与 <see cref="Release"/> 的「持全局锁等条目锁」
+///   恰好构成死锁的另一个实例,而这一个连加锁顺序都救不了。</description></item>
 /// </list>
-/// <b>后续若再添「一次动两张图」的能力,必须沿用这两条规则</b>,而不是各自发明一套顺序。
+/// <b>后续若再添「一次动两张图」或「读一张、写一张」的能力,必须沿用这两条规则</b>,
+/// 而不是各自发明一套顺序。
 /// </para>
 /// <para>
 /// <b>为什么超限立即失败、而不是驱逐已有对象</b>:驱逐会让<b>先创建、仍在使用</b>的 Id 突然失效,
@@ -527,6 +549,104 @@ public sealed class ImageBufferStore
                 return covered;
             }
         }
+    }
+
+    /// <summary>
+    /// 按一个区域裁切指定图像,<b>生成一张新的内存图像</b>并返回其 Id;源图逐字节不变。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>本方法是唯一「先取源图像素、再动全局锁」的成员,故加锁顺序是本方法最需要读懂的部分。</b>
+    /// 既有约定是全局锁<b>恒先于</b>条目锁(<see cref="Release"/> 与 <see cref="Reap"/> 都会在持有
+    /// <see cref="_gate"/> 时去取条目锁,且前者<b>阻塞等待</b>)。而裁切既需要读源图像素(要条目锁)、
+    /// 又需要判定并登记容量(要 <see cref="_gate"/>)—— 若写成「持条目锁时再取全局锁」,
+    /// 就与 <see cref="Release"/> 的 <c>_gate → entry.Sync</c> <b>恰好构成 ABBA 死锁</b>。
+    /// 这与 <see cref="Composite"/> 面对的是同一族问题,但合成不需要容量判定,可以「全程不碰全局锁」,
+    /// 裁切不行,故此处采用<b>四段式:任何时刻只持有一把锁,绝不同时持有两把</b>:
+    /// </para>
+    /// <list type="number">
+    ///   <item><description><b>取元信息</b> —— 短暂持条目锁(<see cref="TryDescribe"/>),取完即释放;</description></item>
+    ///   <item><description><b>求布局</b> —— 纯计算(<see cref="ImageCropper.Plan"/>),零分配、零锁。
+    ///   区域参数的全部失败形态在此抛出,此时尚未分配任何内存;</description></item>
+    ///   <item><description><b>容量预检</b> —— 只取 <see cref="_gate"/>(<see cref="EnsureCapacity"/>);
+    ///   <b>分配必须在其后</b>,否则闸门形同虚设;</description></item>
+    ///   <item><description><b>搬像素</b> —— 只取一个条目锁;<b>紧接着登记</b> —— 只取 <see cref="_gate"/>。</description></item>
+    /// </list>
+    /// <para>
+    /// <b>窗口期为什么是安全的</b>:第 1 步与第 4 步之间源图可能被释放或回收,
+    /// 由第 4 步锁内的 <see cref="EnsureAlive"/> 兜底(抛 <see cref="ImageNotFoundException"/>);
+    /// 而 <see cref="ImageBuffer"/> 的 <c>Width</c>/<c>Height</c>/<c>Format</c> 是<b>构造期只读属性</b>,
+    /// Id 也永不复用,故第 2 步算出的尺寸与格式在第 4 步依然成立。
+    /// </para>
+    /// <para>
+    /// <b>源图逐字节不变</b>,新对象是独立的深拷贝 —— 这与就地修改目标的
+    /// <see cref="Composite"/> 语义相反,故本方法<b>不声明 <c>Idempotent</c></b> 的对应物:
+    /// 每次调用都会新建一个对象并占用容量,重试会产生多个副本。
+    /// </para>
+    /// <para>
+    /// <b>失败时源图访问时间不刷新</b>,与 <see cref="Draw"/> / <see cref="SetPixels"/> /
+    /// <see cref="Composite"/> 一致:失败的请求不应把已无人使用的图像续命。
+    /// </para>
+    /// <para>
+    /// <b><see cref="Shape"/> 与 <see cref="CropStyle"/> 都是纯值输入</b>:本方法因此不需要
+    /// 把任何 <see cref="ImageBuffer"/> 交出去,「裸缓冲区不出注册表」的约束继续成立。
+    /// </para>
+    /// </remarks>
+    /// <param name="id">源图 Id,<b>不会被修改</b>。</param>
+    /// <param name="region">裁切区域(矩形或 SVG 路径)。</param>
+    /// <param name="style">裁切样式。</param>
+    /// <returns>新对象的 Id 与元信息。</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="region"/> 为 <c>null</c>。</exception>
+    /// <exception cref="ImageNotFoundException">源 Id 不存在、已被释放或被回收。</exception>
+    /// <exception cref="InvalidGeometryException">区域几何非法,或收缩到包围盒后尺寸不为正。</exception>
+    /// <exception cref="PathSyntaxException"><c>d</c> 字符串存在语法错误。</exception>
+    /// <exception cref="DrawingLimitExceededException">超出 <see cref="DrawingLimits"/> 的任一项上限。</exception>
+    /// <exception cref="ArgumentOutOfRangeException">输出尺寸非法或超出 <see cref="ImageLimits"/>。</exception>
+    /// <exception cref="ImageCapacityExceededException">对象数或总字节数超出上限。</exception>
+    public CropOutcome Crop(string id, Shape region, CropStyle style)
+    {
+        ArgumentNullException.ThrowIfNull(region);
+
+        // 第一段:只取元信息。此处不上锁到搬像素那一步,是为了不让「源图条目锁」与「全局锁」
+        // 在任何瞬间同时被持有(见方法注释的 ABBA 段落)。失败时不刷新访问时间
+        if (!TryDescribe(id, out var source))
+        {
+            throw new ImageNotFoundException(id);
+        }
+
+        // 第二段:纯计算。区域非法在此抛出,此时零分配、零写入
+        CropLayout layout = ImageCropper.Plan(region, source.Width, source.Height, style);
+
+        // 第三段:零分配地撞容量。必须早于分配 —— 否则一次声明了超大包围盒的请求
+        // 会先逼出巨额分配、再被告知注册表装不下
+        EnsureCapacity(layout.Width, layout.Height, source.Format);
+
+        // 第四段上半:此时才分配。不持任何锁
+        var destination = new ImageBuffer(layout.Width, layout.Height, source.Format);
+
+        var entry = Resolve(id);
+        int kept;
+        lock (entry.Sync)
+        {
+            // 第一段与本段之间的窗口期内对象可能已被释放或回收
+            EnsureAlive(entry);
+
+            kept = ImageCropper.Crop(entry.Image, destination, region, style, layout);
+
+            entry.LastAccessUtc = _timeProvider.GetUtcNow();
+        }
+
+        // 第四段下半:登记。只取全局锁,此刻已不持有任何条目锁
+        string newId = Add(destination);
+
+        return new CropOutcome(
+            newId,
+            destination.Width,
+            destination.Height,
+            destination.Format,
+            destination.Stride,
+            destination.ByteLength,
+            kept);
     }
 
     /// <summary>

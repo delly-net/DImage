@@ -97,7 +97,7 @@ public sealed class ImageTools(ImageBufferStore store)
     {
         string formatName = format ?? DefaultFormatName;
 
-        if (!TryParseFormat(formatName, out var pixelFormat))
+        if (!PixelFormatText.TryParseFormat(formatName, out var pixelFormat))
         {
             return Error(
                 CodeInvalidFormat,
@@ -220,7 +220,7 @@ public sealed class ImageTools(ImageBufferStore store)
                 Id: id,
                 Width: descriptor.Width,
                 Height: descriptor.Height,
-                Format: FormatNameOf(descriptor.Format),
+                Format: PixelFormatText.FormatNameOf(descriptor.Format),
                 Stride: descriptor.Stride,
                 ByteLength: descriptor.ByteLength));
         }
@@ -422,59 +422,15 @@ public sealed class ImageTools(ImageBufferStore store)
             + $"实际以 {Describe(head)} 开头,解析失败原因:{ex.Message}";
     }
 
-    /// <summary>求像素格式的规范化对外名称(小写),与 <see cref="TryParseFormat"/> 互为逆运算。</summary>
-    /// <exception cref="ArgumentOutOfRangeException">格式不是已定义的像素格式。</exception>
-    private static string FormatNameOf(PixelFormat format) => format switch
-    {
-        PixelFormat.Gray8 => "gray8",
-        PixelFormat.Rgb24 => "rgb24",
-        PixelFormat.Bgr24 => "bgr24",
-        PixelFormat.Rgba32 => "rgba32",
-        PixelFormat.Bgra32 => "bgra32",
-        // 未定义格式必须立即失败:静默兜底会让调用方拿到一个它无法在后续调用中使用的格式名
-        _ => throw new ArgumentOutOfRangeException(
-            nameof(format), format, $"未知的像素格式({(int)format}),无法确定对外名称。")
-    };
-
-    // —————————————————————— 输入解析 ——————————————————————
-
-    /// <summary>
-    /// 解析像素格式名(大小写不敏感)。
-    /// </summary>
-    /// <remarks>
-    /// <b>刻意不用 <see cref="Enum.TryParse{TEnum}(string, bool, out TEnum)"/></b>:它对数字串同样返回成功,
-    /// <c>"3"</c> 会被解析成 <c>Rgba32</c>,<c>"99"</c> 会解析出一个根本不存在的枚举值。
-    /// 前者让「格式名」这一契约悄悄容纳了「格式序号」,后者则会让非法值一路流到像素寻址处。
-    /// 白名单式匹配是唯一能把这两条都堵死的形式。
-    /// </remarks>
-    private static bool TryParseFormat(string name, out PixelFormat format)
-    {
-        switch (name.Trim().ToLowerInvariant())
-        {
-            case "gray8":
-                format = PixelFormat.Gray8;
-                return true;
-            case "rgb24":
-                format = PixelFormat.Rgb24;
-                return true;
-            case "bgr24":
-                format = PixelFormat.Bgr24;
-                return true;
-            case "rgba32":
-                format = PixelFormat.Rgba32;
-                return true;
-            case "bgra32":
-                format = PixelFormat.Bgra32;
-                return true;
-            default:
-                format = default;
-                return false;
-        }
-    }
-
-    // 颜色解析(TryParseColor / IsHexDigit / ParseHexByte)已抽到 ColorText:
-    // 绘制工具需要同一套解析,留在本类型里只会让两份实现逐渐分叉。
-    // 该抽取是纯搬移,本类型的行为、错误文案与线上契约逐字未变。
+    // —————————————————————— 格式名与颜色解析的去向 ——————————————————————
+    //
+    // 两处私有静态方法已被搬出本类型,均属「纯搬移」:行为、错误文案与线上契约逐字未变。
+    //
+    // 1) 像素格式名解析(FormatNameOf / TryParseFormat)抽到 PixelFormatText:
+    //    image_crop 的结果要把裁切后的格式报出来,而它与本类型必须共用同一个名字集合 ——
+    //    复制一份 switch 等于让「格式名 ↔ 像素格式」有第二个事实源,两份分叉的那天没有告警。
+    // 2) 颜色解析(TryParseColor / IsHexDigit / ParseHexByte)抽到 ColorText:
+    //    绘制工具需要同一套解析,理由同上。
 }
 
 // —————————————————————— 对外 JSON 契约 ——————————————————————

@@ -34,6 +34,12 @@ namespace DImage.Api.Imaging;
 /// <b>像素中心约定</b>:像素 <c>(x, y)</c> 的中心在 <c>(x + 0.5, y + 0.5)</c>。
 /// 该约定只在两处出现:扫描线的 <c>bandStart + row + 0.5</c>,与描边循环里的 <c>x + 0.5</c>。
 /// </para>
+/// <para>
+/// <b>本类型同时是「覆盖率」的唯一实现,不只服务于绘制</b>:<see cref="ImageCropper"/> 的路径裁切
+/// 同样消费 <see cref="AccumulateFill"/>,只是把覆盖率用在「按比例保留源像素」而不是「混入前景色」上。
+/// 该复用是刻意的 —— 任何一处「填充覆盖率怎样算」的第二份实现,都会让同一个路径
+/// 在绘制与裁切下得到不同的形状,而这种分叉不会报错。
+/// </para>
 /// </remarks>
 internal static class ShapeRasterizer
 {
@@ -87,7 +93,7 @@ internal static class ShapeRasterizer
 
             if (style.Fill)
             {
-                AccumulateFill(coverage, figures, style, bandStart, rows);
+                AccumulateFill(coverage, figures, style.FillRule, style.Antialias, bandStart, rows);
             }
 
             if (style.Stroke)
@@ -141,11 +147,34 @@ internal static class ShapeRasterizer
         return covered;
     }
 
-    /// <summary>累积填充覆盖率。</summary>
-    private static void AccumulateFill(
+    /// <summary>
+    /// 累积填充覆盖率 —— <b>本能力域「填充覆盖率怎样算」的唯一实现</b>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>不接收整个 <see cref="DrawStyle"/>,只吃它用得到的两个值</b>(填充规则与抗锯齿开关):
+    /// 除了绘制,<see cref="ImageCropper"/> 也要用「区域 → 覆盖率」这条链,而它没有颜色、没有线宽,
+    /// 更没有「描边/填充」这一对开关 —— 裁切区域天然是填充语义。
+    /// 若此处仍要求一个完整的 <see cref="DrawStyle"/>,裁切路径就得凭空捏造一个,
+    /// 而捏造出来的线宽、颜色会变成永远不会被读取的假输入。
+    /// </para>
+    /// <para>
+    /// <b>形参收窄是纯改造</b>:扫描线求交、半开区间 <c>[low, high)</c>、
+    /// 同横坐标顶点的合并、覆盖率饱和与画布求交,全部逐字未动。
+    /// 改动本方法的算法部分会<b>静默改变全部既有绘制工具的输出</b>,请勿顺手重排。
+    /// </para>
+    /// </remarks>
+    /// <param name="coverage">覆盖率缓冲,须已 <see cref="ScanlineCoverage.BeginBand"/>。</param>
+    /// <param name="figures">折线子路径集合。</param>
+    /// <param name="fillRule">填充规则。</param>
+    /// <param name="antialias">是否抗锯齿;关闭后退化为「像素中心是否落在区间内」的 0/1 判定。</param>
+    /// <param name="bandStart">本 band 的首行行号。</param>
+    /// <param name="rows">本 band 的行数。</param>
+    internal static void AccumulateFill(
         ScanlineCoverage coverage,
         IReadOnlyList<PathFigure> figures,
-        DrawStyle style,
+        FillRule fillRule,
+        bool antialias,
         int bandStart,
         int rows)
     {
@@ -206,7 +235,7 @@ internal static class ShapeRasterizer
             }
 
             Array.Sort(crossings, 0, count);
-            AccumulateScanline(coverage, crossings.AsSpan(0, count), row, style.FillRule, style.Antialias);
+            AccumulateScanline(coverage, crossings.AsSpan(0, count), row, fillRule, antialias);
         }
     }
 
