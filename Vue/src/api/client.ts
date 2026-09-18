@@ -20,6 +20,7 @@ const DEFAULT_TIMEOUT = 10000
 const ERROR_CODE_MESSAGES: Record<string, string> = {
   invalid_password: '密码错误',
   password_required: '请输入管理密码',
+  skill_base_url_not_configured: '服务对外地址未配置,请联系服务管理员',
 }
 
 /** 请求失败错误,携带 HTTP 状态码与后端错误码 */

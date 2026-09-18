@@ -117,6 +117,10 @@ app.MapGet("/", () => Results.Ok(new
         "POST /api/v1/auth/token",
         "POST /api/v1/mcp/verify",
         "GET /api/v1/mcp/tools",
+        "GET /api/v1/skills/install-command",
+        // Skill 下载端点挂在根路径(匿名),见 SkillEndpoints 的类注释
+        "GET /skill/install",
+        "GET /skill/install/{skill}/content",
         // 该清单无自动生成机制,新增端点必须手工同步,否则服务元信息与实际接口清单不一致
         "POST /mcp"
     }
@@ -145,6 +149,7 @@ api.MapGet("/ping", () => Results.Ok(new { message = "pong" }))
 app.MapAuthEndpoints();
 app.MapMcpEndpoints();
 app.MapMcpToolsEndpoints();
+app.MapSkillEndpoints();
 
 // MCP 协议端点(Streamable HTTP)。授权策略必须显式指定 McpAccess:
 // 不写的话会落到默认的 JwtBearer 方案上,而 MCP 客户端持有的是静态 TOKEN,

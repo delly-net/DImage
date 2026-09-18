@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { fetchMcpTools, type McpToolsResponse } from '@/api/mcp'
+import { fetchSkillInstall, type SkillInstallResponse } from '@/api/skill'
 
 type Status = 'loading' | 'success' | 'error'
 
@@ -42,6 +43,19 @@ const VERIFY_EXAMPLE = `curl -X POST "${PLACEHOLDER_BASE}/api/v1/mcp/verify" \\
 
 const tools = computed(() => info.value?.tools ?? [])
 
+/**
+ * 技能下载信息独立于服务信息加载。
+ *
+ * 复用同一个 status/errorMessage 会让两个请求互相覆盖状态:「技能接口失败」会把已成功的
+ * 工具清单一并打成错误态,排查时无法分辨究竟是哪个接口挂了。故各自持有一套状态。
+ */
+const skillStatus = ref<Status>('loading')
+const skillInfo = ref<SkillInstallResponse | null>(null)
+const skillError = ref('')
+const copyHint = ref('')
+
+const skills = computed(() => skillInfo.value?.skills ?? [])
+
 /** 拉取服务信息与工具清单,并把三种状态映射到界面 */
 async function load() {
   status.value = 'loading'
@@ -57,7 +71,48 @@ async function load() {
   }
 }
 
-onMounted(load)
+/** 拉取技能安装命令与技能清单 */
+async function loadSkill() {
+  skillStatus.value = 'loading'
+  skillError.value = ''
+  copyHint.value = ''
+
+  try {
+    skillInfo.value = await fetchSkillInstall()
+    skillStatus.value = 'success'
+  } catch (error) {
+    skillInfo.value = null
+    skillError.value = error instanceof Error ? error.message : String(error)
+    skillStatus.value = 'error'
+  }
+}
+
+/**
+ * 复制安装命令到剪贴板。
+ *
+ * `navigator.clipboard` 仅在安全上下文(https 或 localhost)可用,非安全上下文下为 undefined;
+ * 且用户拒绝剪贴板权限时 writeText 会 reject。两种情况都必须给出可读提示并引导手动复制,
+ * 不能静默 —— 否则用户会以为已复制,把空剪贴板粘进终端。
+ */
+async function copyInstallCommand() {
+  const command = skillInfo.value?.installCommand
+  if (!command) {
+    copyHint.value = '暂无可复制的安装命令'
+    return
+  }
+
+  try {
+    await navigator.clipboard.writeText(command)
+    copyHint.value = '已复制到剪贴板'
+  } catch {
+    copyHint.value = '复制失败,请手动选中上方命令后复制'
+  }
+}
+
+onMounted(() => {
+  load()
+  loadSkill()
+})
 </script>
 
 <template>
@@ -110,6 +165,45 @@ onMounted(load)
         <code>valid: true</code> 表示凭据可用。
       </p>
       <pre>{{ VERIFY_EXAMPLE }}</pre>
+    </section>
+
+    <section class="card" aria-live="polite">
+      <h2>技能下载</h2>
+
+      <p>
+        在本地 Windows 终端(PowerShell)中执行下方命令,即可把服务提供的 Skill
+        安装到<strong>执行命令时所在目录</strong>的 <code>.claude/skills/</code> 下(即安装到当前项目,而非用户全局目录)。
+      </p>
+
+      <p v-if="skillStatus === 'loading'" class="state state--loading">正在加载…</p>
+
+      <template v-else-if="skillStatus === 'success'">
+        <pre>{{ skillInfo?.installCommand }}</pre>
+
+        <button type="button" class="copy" @click="copyInstallCommand">复制命令</button>
+        <p v-if="copyHint" class="hint">{{ copyHint }}</p>
+
+        <h3>将安装的技能</h3>
+        <ul v-if="skills.length > 0" class="tools">
+          <li v-for="skill in skills" :key="skill.key">
+            <strong>{{ skill.name }}</strong>
+            <span class="hint">{{ skill.description }}</span>
+          </li>
+        </ul>
+
+        <!-- 与工具清单同款空态表述:不依赖具体技能名与时间点,服务端增删技能后依然成立 -->
+        <p v-else class="state state--empty">服务当前未发布可下载的技能。</p>
+      </template>
+
+      <template v-else>
+        <p class="state state--error">✗ 技能下载信息加载失败</p>
+        <p class="error-detail">{{ skillError }}</p>
+        <p class="hint">
+          安装命令由服务端按配置的对外地址生成;若提示地址未配置,请由服务管理员配置后重试。
+        </p>
+      </template>
+
+      <button type="button" :disabled="skillStatus === 'loading'" @click="loadSkill">重新检测</button>
     </section>
 
     <section class="card" aria-live="polite">
@@ -266,6 +360,15 @@ code {
 
 .tools .hint {
   margin-left: 0.5rem;
+}
+
+/* 复制按钮紧贴安装命令,不需要底部「重新检测」按钮那样的 1.25rem 间距 */
+.copy {
+  margin-top: 0.75rem;
+}
+
+.copy + .hint {
+  margin-top: 0.5rem;
 }
 
 button {
