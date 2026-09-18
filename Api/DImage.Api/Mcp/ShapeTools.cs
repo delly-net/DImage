@@ -8,7 +8,7 @@ using ModelContextProtocol.Server;
 namespace DImage.Api.Mcp;
 
 /// <summary>
-/// 绘制能力的五项 MCP 工具:直线/折线、矩形、椭圆/扇形、多边形、SVG 路径。
+/// 绘制能力的六项 MCP 工具:直线/折线、矩形、椭圆/扇形、多边形、SVG 路径、文字。
 /// </summary>
 /// <remarks>
 /// <para>
@@ -92,6 +92,12 @@ public sealed class ShapeTools(ImageBufferStore store)
 
     /// <summary>默认填充规则名。</summary>
     private const string DefaultFillRuleName = "nonzero";
+
+    /// <summary>默认文本对齐方式名。</summary>
+    private const string DefaultAnchorName = "left";
+
+    /// <summary>仿射矩阵的分量个数。</summary>
+    private const int TransformComponentCount = 6;
 
     // 五条工具描述里反复出现的两句说明,抽成常量并在 [Description] 中拼接:
     // 二者是「与 image_set_pixels 语义不同」的全部要点,也是验收 A34 的断言对象。
@@ -325,6 +331,84 @@ public sealed class ShapeTools(ImageBufferStore store)
         return Execute(id, new PathShape(d), style);
     }
 
+    // —————————————————————— 工具 6:文字 ——————————————————————
+
+    /// <summary>
+    /// 绘制文字(只描边,不填充)。
+    /// </summary>
+    /// <remarks>
+    /// <b>整段文本是一次绘制</b>:它虽然有上千条折线子路径,但只调用一次 <see cref="ImageBufferStore.Draw"/>。
+    /// 若改成逐字绘制,笔画交叉处的像素会被混合两次 —— 汉字撇捺交叉点出现暗斑,
+    /// 而返回的 <c>covered</c> 也会随之偏大。故这里传的是<b>一个</b><see cref="TextShape"/>。
+    /// </remarks>
+    /// <param name="id">目标图像 Id。</param>
+    /// <param name="text">待绘制文本。</param>
+    /// <param name="x">文本原点横坐标。</param>
+    /// <param name="y">文本原点纵坐标,即首行基线。</param>
+    /// <param name="color"><c>#RRGGBB</c> 或 <c>#RRGGBBAA</c>。</param>
+    /// <param name="size">字号,即 1 em 的像素高度。</param>
+    /// <param name="stroke_width">线宽(像素)。</param>
+    /// <param name="letter_spacing">字距(像素)。</param>
+    /// <param name="line_spacing">行距(像素);省略取 <see cref="TextLimits.DefaultLineHeightRatio"/> × 字号。</param>
+    /// <param name="anchor">水平对齐方式名。</param>
+    /// <param name="transform">仿射矩阵六分量。</param>
+    /// <param name="antialias">是否抗锯齿。</param>
+    [McpServerTool(
+        Name = "image_draw_text",
+        Title = "绘制文字",
+        Destructive = true,
+        OpenWorld = false)]
+    [Description("按 id 在内存图像上绘制文字:每个字符按内置单线笔画字库展开为笔画后描边(仅描边,永不填充)。size 是 1 em 的像素高度(拉丁按大写字母高度归一化、汉字按设计框);x/y 是首行基线起点,多行时每行各自按 anchor 对齐(left 行首 / center 行中 / right 行尾落在 x,y 逐行下移 line_spacing);文本中 \\n 换行、\\r\\n 与 \\r 等价于 \\n、\\t 展开为 4 个空格;transform 取 6 个分量 [a,b,c,d,e,f],语义同 SVG matrix(a,b,c,d,e,f)(x'=a·x+c·y+e、y'=b·x+d·y+f),作用在已按 size 缩放的像素坐标上、绕文本原点进行。字库未收录的字符(中文标点、emoji 等)以豆腐块方框占位而不报错,该方框同样占用 1 em 宽度。整段文本按一次绘制完成,故笔画交叉处不会因多次混合而加深。" + ClipNote + NonIdempotentNote + "成功返回 {ok,id,covered}。")]
+    public CallToolResult DrawText(
+        [Description("image_create 返回的图像 id")] string? id,
+        [Description("要绘制的文本,最长 4096 字符;\\n 换行、\\t 展开为 4 个空格")] string? text,
+        [Description("文本原点横坐标(允许亚像素);锚在行的哪一侧由 anchor 决定")] double x,
+        [Description("文本原点纵坐标,即首行基线的位置;后续行按 line_spacing 向下排布")] double y,
+        [Description("颜色,#RRGGBB 或 #RRGGBBAA")] string? color,
+        [Description("字号(像素),即 1 em 的高度;须大于 0 且不超过 4096,默认 16")] double size = 16,
+        [Description("线宽(像素),须大于 0 且不超过 4096,默认 1")] double stroke_width = 1,
+        [Description("字距(像素),加在每个字形之后(含末字形),负值收紧字距,默认 0")] double letter_spacing = 0,
+        [Description("行距(像素),须大于 0;省略则取字号的 1.2 倍")] double? line_spacing = null,
+        [Description("水平对齐方式,取 left(默认)、center 或 right,大小写不敏感;逐行生效,故 center 下各短行左端不齐平")] string? anchor = DefaultAnchorName,
+        [Description("仿射变换矩阵,须为 6 个 double:[a,b,c,d,e,f],语义同 SVG matrix(a,b,c,d,e,f);省略即不变换")] IReadOnlyList<double>? transform = null,
+        [Description("是否抗锯齿,默认 true;关闭后像素颜色非前景即背景")] bool antialias = true)
+    {
+        // text 为 null 归到 invalid_geometry:与 image_draw_path 把 null 的 d 归到 invalid_path 同理,
+        // 「没有文本」与「文本参数写错」对调用方是同一类处置(改 text),分开只会多一个码要记
+        if (text is null)
+        {
+            return Error(
+                CodeInvalidGeometry,
+                "text 不能为空:期望要绘制的文本(如 \"Hello 世界\"),实际 null。");
+        }
+
+        if (!TextAnchorExtensions.TryParseAnchor(anchor, out var parsedAnchor))
+        {
+            // anchor 沿用 invalid_geometry 而非新立一个码:它是几何定位属性,
+            // 且新码会让调用方多记一个与 invalid_fill_rule 高度相似的失败形态
+            return Error(
+                CodeInvalidGeometry,
+                $"anchor 非法:期望 left、center 或 right(大小写不敏感),实际 {Describe(anchor)}。");
+        }
+
+        if (BuildTransform(transform, out var parsedTransform) is { } transformError)
+        {
+            return transformError;
+        }
+
+        // 文字只有描边这一种形态:单线笔画字库没有可填充的内部,
+        // 故 fill 恒为 false 且不开放 fill_rule —— 开放一个永远无效的参数只会误导调用方
+        if (BuildStyle(color, stroke_width, stroke: true, fill: false, FillRule.NonZero, antialias, out var style) is { } error)
+        {
+            return error;
+        }
+
+        return Execute(
+            id,
+            new TextShape(text, x, y, size, letter_spacing, line_spacing, parsedAnchor, parsedTransform),
+            style);
+    }
+
     // —————————————————————— 执行与映射 ——————————————————————
 
     /// <summary>
@@ -405,6 +489,35 @@ public sealed class ShapeTools(ImageBufferStore store)
         return null;
     }
 
+    /// <summary>
+    /// 把六分量入参装配为仿射矩阵;分量个数不对时返回对外的失败结果(否则返回 <c>null</c>)。
+    /// </summary>
+    /// <remarks>
+    /// 只在此处判<b>个数</b>,不判各分量的取值:后者是 <see cref="AffineTransform.Validate"/> 的职责,
+    /// 两边都判必然逐渐分叉。个数则必须在此判 —— 少一个分量根本无法构造出矩阵,
+    /// 而若默认补 <c>0</c>,一个「只想平移却少写一位」的调用方会得到一条退化成点的文本且无任何提示。
+    /// </remarks>
+    private static CallToolResult? BuildTransform(IReadOnlyList<double>? values, out AffineTransform transform)
+    {
+        transform = AffineTransform.Identity;
+
+        if (values is null)
+        {
+            return null;
+        }
+
+        if (values.Count != TransformComponentCount)
+        {
+            return Error(
+                CodeInvalidGeometry,
+                $"transform 需要 {TransformComponentCount} 个分量,"
+                + $"顺序同 SVG matrix(a,b,c,d,e,f)(x'=a·x+c·y+e、y'=b·x+d·y+f),实际 {values.Count} 个。");
+        }
+
+        transform = new AffineTransform(values[0], values[1], values[2], values[3], values[4], values[5]);
+        return null;
+    }
+
     /// <summary>构造填充规则非法的失败结果。</summary>
     private static CallToolResult InvalidFillRule(string? name) => Error(
         CodeInvalidFillRule,
@@ -460,7 +573,7 @@ public sealed record ShapePoint(
     [property: JsonPropertyName("x")] double X,
     [property: JsonPropertyName("y")] double Y);
 
-/// <summary>五项 <c>image_draw_*</c> 工具共用的成功结果:<c>{ ok, id, covered }</c>。</summary>
+/// <summary>六项 <c>image_draw_*</c> 工具共用的成功结果:<c>{ ok, id, covered }</c>。</summary>
 /// <param name="Ok">恒为 <c>true</c>。</param>
 /// <param name="Id">目标标识。</param>
 /// <param name="Covered">

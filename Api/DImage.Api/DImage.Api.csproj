@@ -23,4 +23,28 @@
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
   </ItemGroup>
 
+  <!--
+    单线笔画字库的三份数据。随程序集内嵌发布,**不落盘、不联网、不读配置**:
+    字库是随程序发布的固定数据,一旦做成外部文件,「路径找不到」就成了一种运行期失败形态,
+    而它只会表现为「文字画不出来」—— 与字库本身的问题难以区分。
+
+    刻意**不写 LogicalName**:按默认规则生成的名字是
+    {RootNamespace}.{文件夹路径}.{文件名}(此处为 DImage.Api.Imaging.Glyphs.latin-rowmans.jhf 等),
+    而代码侧 EmbeddedResources.Open 正是按「.文件名」后缀匹配的 —— 两边因此不必互相钉死,
+    RootNamespace 或目录结构变动时也不会静默失配。
+
+    **但默认规则会剥掉「像语言代码」的中间扩展名,故资源文件名不得带多段扩展名。**
+    实测(本 SDK):`alpha.bin.gz` 的清单名是 `….alpha.gz` —— MSBuild 把 `.bin` 当作
+    culture 段剥离(`bin` 恰是 Bini 语的 ISO-639 三字母代码),而 `epsilon.tar.gz` 则原样保留
+    (`tar` 不是语言代码)。汉字字库原名为 `hanzi-medians.bin.gz`,于是清单名比文件名**少一段**,
+    按文件名后缀匹配的查找在运行期直接抛「程序集内没有内嵌资源」。
+    故该资源改名为单段扩展名的 `hanzi-medians.gz`,使「文件名 = 清单名后缀」重新成立 ——
+    比补一个钉死 RootNamespace 的 LogicalName 更不易随目录结构变动而失配。
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Imaging\Glyphs\latin-rowmans.jhf" />
+    <EmbeddedResource Include="Imaging\Glyphs\latin-ascii-map.txt" />
+    <EmbeddedResource Include="Imaging\Glyphs\hanzi-medians.gz" />
+  </ItemGroup>
+
 </Project>
