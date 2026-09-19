@@ -35,6 +35,16 @@ public static class SkillService
     /// </remarks>
     public const string DimageOnLoadedNotice = "DImage工具包加载完成";
 
+    /// <summary>
+    /// <c>dimage-on</c> 技能约定的临时文件目录,**相对项目根**。
+    /// </summary>
+    /// <remarks>
+    /// 抽成常量而非在正文各节内联:该串出现在技能正文的「执行要求」「配套脚本」「临时文件」三节,
+    /// 且验收要按它断言「产物里确实写死了这条约束」。与 <see cref="DimageOnLoadedNotice"/> 同一处置 ——
+    /// 契约文本一旦散落在多段拼接里,就只能靠模糊匹配守住。
+    /// </remarks>
+    public const string SkillTempDirectory = ".claude/temp";
+
     /// <summary>技能内容的下载路径前缀(根路径,匿名访问),后接 <c>{skillKey}/content</c>。</summary>
     public const string SkillContentPathPrefix = "/skill/install";
 
@@ -342,7 +352,9 @@ public static class SkillService
     /// <para>
     /// 因此正文只承载<b>能改变调用方式的信息</b>:「服务接入」「能力清单」两节是 MCP 信息本体,
     /// 「配套脚本」一节回答「拿到 id 之后怎么把图取回来」—— 后者无法由工具说明承载(工具只返回图像内容块,
-    /// 把结果交给模型等于把一段 base64 背进上下文)。早先的「典型工作流」「注意事项」两节已移除:
+    /// 把结果交给模型等于把一段 base64 背进上下文);「临时文件」一节回答「产物落到哪」——
+    /// 该约束同样无法由工具说明承载(工具说明只描述单次调用),却是使用本技能时最易污染宿主项目的点。
+    /// 早先的「典型工作流」「注意事项」两节已移除:
     /// 它们不进上下文也无损能力,却让每次加载都多背一段与当前任务无关的长文。
     /// </para>
     /// <para>
@@ -398,6 +410,8 @@ public static class SkillService
         sb.AppendLine(DimageOnLoadedNotice);
         sb.AppendLine("```");
         sb.AppendLine("4. 无论以何种方式触发(显式调用或聊天触发),本技能的输出恒为上述一行。");
+        sb.AppendLine($"5. **本技能产生的一切临时文件一律落在 `{{项目根目录}}/{SkillTempDirectory}`**,"
+            + "不得落到项目根目录、当前工作目录或其他位置 —— 完整规则见下文「临时文件」一节。");
         sb.AppendLine();
 
         // —————————————— 服务接入 ——————————————
@@ -458,13 +472,42 @@ public static class SkillService
             + "把服务端内存中的图像**按 Id 直接落盘**,不必把 base64 搬进对话上下文。");
         sb.AppendLine();
         sb.AppendLine("```bash");
-        sb.AppendLine($"python .claude/skills/{SkillCatalog.DimageOnName}/{DimageDownScript.FileName} <图像 id> [目标地址]");
+        sb.AppendLine($"python .claude/skills/{SkillCatalog.DimageOnName}/{DimageDownScript.FileName} <图像 id> {SkillTempDirectory}");
         sb.AppendLine("```");
         sb.AppendLine();
         sb.AppendLine($"- 服务地址与 TOKEN 取自项目根 `.mcp.json` 的 `{McpClientConfig.ServerKey}` 条目;"
             + $"未配置时先执行 `irm {root}{McpInstallPath} | iex`");
-        sb.AppendLine("- 省略「目标地址」时写入当前目录;给目录(或以 `/`、`\\` 结尾)则自动命名为 `<id>.png`");
+        sb.AppendLine($"- 目标地址按临时文件约定**一律给 `{SkillTempDirectory}`**,并**先确保该目录已存在**(见下文「临时文件」);"
+            + "给已存在的目录或以 `/`、`\\` 结尾时才自动命名为 `<id>.png`,"
+            + "**否则该路径被当作文件写出** —— 本脚本不会自动建目录");
         sb.AppendLine("- 退出码:0 成功 / 1 用法或配置错误 / 2 服务端报错、网络不通或写盘失败");
+        sb.AppendLine();
+
+        // —————————————— 临时文件 ——————————————
+        // 放在正文末尾而不是「执行要求」之后,是刻意选择:① 顶部「执行要求」1–4 条全是**可见输出契约**,
+        // 把「文件落盘」塞进去会稀释该节语义,故那里只留一条强约束 + 指向本节;② 技能正文里唯一会产出
+        // 本地文件的手段就是紧邻其上的 dimage-down.py,规则与它相邻;③ 位于正文最末 = 模型开始行动前
+        // 最后读到的内容,对指令遵循有利。
+        // 本节的「项目根目录判定」取「技能自身位置向上三级」而非「找 .mcp.json」:后者在未安装接入配置的
+        // 项目里根本找不到根(本仓库根 .mcp.json 即无 dimage 条目),而技能自身位置恒存在。
+        sb.AppendLine("## 临时文件");
+        sb.AppendLine();
+        sb.AppendLine($"本技能产生的一切**临时文件**(下载的图像、调试图、中间产物、脚本输出等)"
+            + $"一律存放在 `{{项目根目录}}/{SkillTempDirectory}` 目录中,"
+            + "**不得落在项目根目录、当前工作目录或任何其他位置**。");
+        sb.AppendLine();
+        sb.AppendLine($"- **项目根目录的判定**:本技能安装在 `{{项目根目录}}/.claude/skills/{SkillCatalog.DimageOnName}/`,"
+            + $"故自本技能所在目录**向上三级**即项目根目录;在项目根目录下操作时,该目录即 `{SkillTempDirectory}`。");
+        // 「不自动建目录」这一条不是提醒而是**实测出来的坑**:dimage-down.py 的 resolve_target 只在目标
+        // 「已是目录」或「以 / 或 \ 结尾」时才补 <id>.png;`.claude/temp` 不存在又没带尾分隔符时,它把该路径
+        // 当**文件**接受(父目录 `.claude\` 因技能已安装而必然存在,故那道父目录校验拦不住),
+        // 结果写出一个名为 temp 的文件。故本节必须把「先建目录」写成动作要求,而非可选的容错提示。
+        sb.AppendLine($"- **运行脚本前先创建该目录**:`mkdir -p {SkillTempDirectory}`"
+            + $"(PowerShell:`New-Item -ItemType Directory -Force -Path {SkillTempDirectory} | Out-Null`)。"
+            + "上文「配套脚本」的 `dimage-down.py` **不会自动建目录**:目标目录不存在且路径未以 `/`、`\\` 结尾时,"
+            + "它会把该路径当**文件**写出(得到一个名为 `temp` 的文件,而非目录)。");
+        sb.AppendLine("- **例外**:用户明确指定了落点、或产物本身就是交付物时,按用户指定的位置落盘,不受本节约束。");
+        sb.AppendLine($"- `{SkillTempDirectory}/` 属临时产物、无须入库,可在宿主项目的 `.gitignore` 中忽略。");
         sb.AppendLine();
 
         // 刻意不生成「典型工作流」「注意事项」两节:它们不进上下文也无损能力,
