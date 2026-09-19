@@ -121,6 +121,7 @@ app.MapGet("/", () => Results.Ok(new
         // Skill 下载端点挂在根路径(匿名),见 SkillEndpoints 的类注释
         "GET /skill/install",
         "GET /skill/install/{skill}/content",
+        "GET /skill/install/{skill}/files/{file}",
         // MCP 客户端接入配置的安装脚本,与 Skill 安装并列暴露在根路径(匿名)
         "GET /mcp/install",
         // 该清单无自动生成机制,新增端点必须手工同步,否则服务元信息与实际接口清单不一致

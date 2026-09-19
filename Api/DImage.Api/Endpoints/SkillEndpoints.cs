@@ -6,7 +6,7 @@ using ModelContextProtocol.Server;
 namespace DImage.Api.Endpoints;
 
 /// <summary>
-/// Skill 下载端点:PowerShell 安装脚本、技能内容下载,以及供浏览器管理端取用的安装命令。
+/// Skill 下载端点:PowerShell 安装脚本、技能内容与随附文件下载,以及供浏览器管理端取用的安装命令。
 /// </summary>
 /// <remarks>
 /// <para>
@@ -85,6 +85,35 @@ public static class SkillEndpoints
             .WithTags("Skill")
             .AllowAnonymous();
 
+        // —————————————— 匿名:技能随附文件(按 {技能 key}/{文件名} 定位) ——————————————
+        // 与 SKILL.md 落到同一目录。准入判据是「SkillCatalog 声明过」,不是磁盘上存在 ——
+        // 故清单与可下载内容永远一致,不存在「清单里有、下载 404」的静默错配。
+        // 响应类型与 charset 口径同上一端点:脚本正文必须是可逐字节落盘的文本。
+        app.MapGet($"{SkillService.SkillContentPathPrefix}/{{skill}}/files/{{file}}", (
+                string skill,
+                string file) =>
+            {
+                var content = SkillService.TryGenerateSkillFileContent(skill, file);
+                if (content is null)
+                {
+                    // 回带可用文件名清单:与 unknown_skill 同一考虑 —— 调用方是安装脚本与排查者,
+                    // 「这个技能到底带哪些文件」比「文件名错了」更有用
+                    return Results.Json(
+                        new
+                        {
+                            error = "unknown_skill_file",
+                            skill,
+                            availableFiles = SkillCatalog.FilesFor(skill).Select(f => f.Name).ToArray()
+                        },
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                return Results.Text(content, "text/plain; charset=utf-8");
+            })
+            .WithName("GetSkillFile")
+            .WithTags("Skill")
+            .AllowAnonymous();
+
         // —————————————— 鉴权:供浏览器管理端取安装命令与技能清单 ——————————————
         var api = app.MapGroup("/api/v1");
 
@@ -108,7 +137,15 @@ public static class SkillEndpoints
                     mcpInstallUrl = $"{baseUrl}{SkillService.McpInstallPath}",
                     mcpInstallCommand = SkillService.GenerateMcpInstallCommand(baseUrl),
                     skills = SkillCatalog.Definitions
-                        .Select(s => new { key = s.Key, name = s.Name, description = s.Description })
+                        .Select(s => new
+                        {
+                            key = s.Key,
+                            name = s.Name,
+                            description = s.Description,
+                            // 纯新增字段:既有 key/name/description 的语义与字面量逐字不变,
+                            // 前端当前不消费 files(技能卡片只展示名称与描述)
+                            files = s.Files.Select(f => new { name = f.Name, description = f.Description }).ToArray()
+                        })
                         .ToArray()
                 });
             })

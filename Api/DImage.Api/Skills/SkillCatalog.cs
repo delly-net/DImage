@@ -1,7 +1,14 @@
 namespace DImage.Api.Skills;
 
 /// <summary>
-/// 对外可下载的 Skill 清单,集中定义技能 key / 名称 / 描述。
+/// 技能随附分发的文件(与 <c>SKILL.md</c> 落在<b>同一目录</b>)。
+/// </summary>
+/// <param name="Name">文件名,即落盘名,同时是内容分发接口 <c>{file}</c> 段的查询值。</param>
+/// <param name="Description">文件用途说明(供管理端清单展示)。</param>
+public sealed record SkillFile(string Name, string Description);
+
+/// <summary>
+/// 对外可下载的 Skill 清单,集中定义技能 key / 名称 / 描述 / 随附文件。
 /// </summary>
 /// <remarks>
 /// <para>
@@ -31,14 +38,33 @@ public static class SkillCatalog
     /// </remarks>
     public const string DimageOnDescription = "将小D图像服务的全部图像处理 MCP 能力加载到对话上下文";
 
+    /// <summary><c>dimage-down.py</c> 的用途说明(供管理端技能清单展示)。</summary>
+    public const string DimageDownFileDescription = "对接 MCP 图像下载能力,把内存图像按 Id 直接落盘的命令行脚本";
+
     /// <summary>
-    /// 项目 Skill 定义清单(key / 技能名 / 描述),供安装脚本与管理端清单复用。
+    /// 项目 Skill 定义清单(key / 技能名 / 描述 / 随附文件),供安装脚本与管理端清单复用。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 顺序即安装脚本的执行顺序;本表是技能清单的<b>唯一事实源</b>,禁止在端点或脚本模板内另写一份。
+    /// </para>
+    /// <para>
+    /// <b>随附文件也进本表</b>:安装脚本、文件分发接口与管理端清单三处都从 <c>Files</c> 派生,
+    /// 于「某个技能带哪几个文件」这件事上同样只有一处答案 —— 否则新增一个文件要改三处,
+    /// 漏掉文件分发分支的表现是「清单里有、下载 404」。
+    /// </para>
     /// </remarks>
-    public static (string Key, string Name, string Description)[] Definitions { get; } =
+    public static (string Key, string Name, string Description, SkillFile[] Files)[] Definitions { get; } =
     [
-        (Key: DimageOnKey, Name: DimageOnName, Description: DimageOnDescription),
+        (Key: DimageOnKey, Name: DimageOnName, Description: DimageOnDescription,
+            Files: [new SkillFile(DimageDownScript.FileName, DimageDownFileDescription)]),
     ];
+
+    /// <summary>取某技能随附的文件清单;key 未知时返回空数组(不抛异常,由调用方翻译为 404)。</summary>
+    public static SkillFile[] FilesFor(string skillKey)
+        => Definitions.FirstOrDefault(definition => definition.Key == skillKey).Files ?? [];
+
+    /// <summary>按技能 key 与文件名定位随附文件;未命中返回 <c>null</c>。</summary>
+    public static SkillFile? FindFile(string skillKey, string fileName)
+        => FilesFor(skillKey).FirstOrDefault(file => file.Name == fileName);
 }

@@ -58,7 +58,7 @@ public static class SkillService
         => $"irm {NormalizeBaseUrl(baseUrl)}{InstallScriptPath} | iex";
 
     /// <summary>
-    /// 生成 PowerShell 安装脚本:循环下载清单中每个技能的 <c>SKILL.md</c>,写入执行命令所在目录的
+    /// 生成 PowerShell 安装脚本:循环下载清单中每个技能的 <c>SKILL.md</c> 与其随附文件,写入执行命令所在目录的
     /// <c>.claude\skills\{技能名}\</c>(UTF-8)。
     /// </summary>
     /// <param name="baseUrl">服务对外根地址(环境变量 <c>API_BASE_URL</c>,兜底配置 <c>Service:BaseUrl</c>)。</param>
@@ -74,6 +74,11 @@ public static class SkillService
     /// 而 BOM 会落在 <c>SKILL.md</c> 的 YAML frontmatter 之前,使文件首个字符不再是 <c>---</c>。
     /// 故显式使用 <c>UTF8Encoding($false)</c>。
     /// </para>
+    /// <para>
+    /// <b>随附文件清单在脚本里只存文件名,不存说明</b>:说明是管理端清单的展示字段,安装脚本用不到;
+    /// 而把「哈希表套哈希表数组」写进 <c>@{ }</c> 字面量会踩 PowerShell 单元素数组被解包的老坑
+    /// (<c>foreach</c> 到一个哈希表本身而非其元素)。存字符串数组则两种版本下语义都确定。
+    /// </para>
     /// </remarks>
     public static string GenerateInstallScript(string baseUrl, string serviceName, string serviceVersion)
     {
@@ -83,7 +88,8 @@ public static class SkillService
         var skillLines = string.Join(",\n", SkillCatalog.Definitions.Select(s =>
             $"    @{{ Name = \"{EscapePowerShell(s.Name)}\"; "
             + $"Key = \"{EscapePowerShell(s.Key)}\"; "
-            + $"Desc = \"{EscapePowerShell(s.Description)}\" }}"));
+            + $"Desc = \"{EscapePowerShell(s.Description)}\"; "
+            + $"Files = @({string.Join(", ", s.Files.Select(f => $"\"{EscapePowerShell(f.Name)}\""))}) }}"));
 
         var script = $$"""
             # 小D图像 Skill 下载安装脚本(由服务端动态生成,请勿手工修改)
@@ -94,6 +100,9 @@ public static class SkillService
             $skills = @(
             {{skillLines}}
             )
+
+            $skillCount = 0
+            $fileCount = 0
 
             foreach ($s in $skills) {
                 # 安装到执行命令所在目录(项目当前目录)的 .claude\skills\{技能名},而非全局用户目录
@@ -109,6 +118,19 @@ public static class SkillService
                 # 显式以 UTF-8 无 BOM 落盘:Encoding.UTF8 会写 BOM,污染 SKILL.md 的 frontmatter
                 $skillFile = Join-Path $targetDir "SKILL.md"
                 [System.IO.File]::WriteAllText($skillFile, $content, (New-Object System.Text.UTF8Encoding($false)))
+                $skillCount++
+
+                # 随附文件与 SKILL.md 同目录落盘(如 dimage-down.py),编码口径完全一致
+                foreach ($f in $s.Files) {
+                    $fileUrl = "$baseUrl{{SkillContentPathPrefix}}/$($s.Key)/files/$f"
+                    $fileContent = (Invoke-WebRequest -Uri $fileUrl -UseBasicParsing).Content
+
+                    $filePath = Join-Path $targetDir $f
+                    [System.IO.File]::WriteAllText($filePath, $fileContent, (New-Object System.Text.UTF8Encoding($false)))
+                    $fileCount++
+
+                    Write-Host "  已安装:$($s.Name)/$f"
+                }
 
                 Write-Host "  已安装:$($s.Name) - $($s.Desc)"
             }
@@ -117,6 +139,7 @@ public static class SkillService
             Write-Host "[小D图像] Skill 安装完成" -ForegroundColor Green
             Write-Host "  服务:$baseUrl"
             Write-Host "  位置:$PWD\.claude\skills"
+            Write-Host "  技能 $skillCount 个,随附文件 $fileCount 个"
             Write-Host ""
             """;
 
@@ -277,6 +300,26 @@ public static class SkillService
     }
 
     /// <summary>
+    /// 按技能 key 与文件名生成随附文件的正文。
+    /// </summary>
+    /// <param name="skillKey">技能 key(取自 <see cref="SkillCatalog.Definitions"/>)。</param>
+    /// <param name="fileName">随附文件名(取自该技能定义项的 <c>Files</c>)。</param>
+    /// <returns>文件正文;技能或文件未知时返回 <c>null</c>(由端点层翻译为 404)。</returns>
+    /// <remarks>
+    /// <b>以「清单里声明过」为唯一准入判据</b>:分发接口不接受清单外的文件名,故这里查不到即拒绝,
+    /// 而不是去磁盘上找文件。落盘内容与清单声明因此永远一致 —— 清单是事实源,磁盘不是。
+    /// </remarks>
+    public static string? TryGenerateSkillFileContent(string skillKey, string fileName)
+    {
+        if (SkillCatalog.FindFile(skillKey, fileName) is null)
+        {
+            return null;
+        }
+
+        return fileName == DimageDownScript.FileName ? ToLf(DimageDownScript.Content) : null;
+    }
+
+    /// <summary>
     /// 把文本的行尾统一为 LF。
     /// </summary>
     /// <remarks>
@@ -297,9 +340,10 @@ public static class SkillService
     /// <see cref="DimageOnLoadedNotice"/>。
     /// </para>
     /// <para>
-    /// 因此正文只承载<b>MCP 信息本体</b>(服务接入、能力清单与参数表),不承载叙述性说明:
-    /// 早先的「典型工作流」「注意事项」两节已移除 —— 它们不进上下文也无损能力,却让每次加载
-    /// 都多背一段与当前任务无关的长文。
+    /// 因此正文只承载<b>能改变调用方式的信息</b>:「服务接入」「能力清单」两节是 MCP 信息本体,
+    /// 「配套脚本」一节回答「拿到 id 之后怎么把图取回来」—— 后者无法由工具说明承载(工具只返回图像内容块,
+    /// 把结果交给模型等于把一段 base64 背进上下文)。早先的「典型工作流」「注意事项」两节已移除:
+    /// 它们不进上下文也无损能力,却让每次加载都多背一段与当前任务无关的长文。
     /// </para>
     /// <para>
     /// 工具清单与参数表全部由 <paramref name="tools"/> 派生,且<b>不含生成时间戳</b> ——
@@ -403,6 +447,25 @@ public static class SkillService
             AppendParameterTable(sb, tool);
             sb.AppendLine();
         }
+
+        // —————————————— 配套脚本 ——————————————
+        // 这一节是本技能唯一「工具清单之外」的内容:它回答的是「拿到 id 之后怎么把图取回来」,
+        // 而这件事恰恰不能靠工具说明解决 —— image_download_png 以图像内容块返回,
+        // 直接把结果交给模型等于把一段 base64 背进上下文。故此处点名配套脚本的存在与用法。
+        sb.AppendLine("## 配套脚本");
+        sb.AppendLine();
+        sb.AppendLine($"与本技能同目录还下载了 `{DimageDownScript.FileName}`(仅用 Python 标准库,免安装依赖):"
+            + "把服务端内存中的图像**按 Id 直接落盘**,不必把 base64 搬进对话上下文。");
+        sb.AppendLine();
+        sb.AppendLine("```bash");
+        sb.AppendLine($"python .claude/skills/{SkillCatalog.DimageOnName}/{DimageDownScript.FileName} <图像 id> [目标地址]");
+        sb.AppendLine("```");
+        sb.AppendLine();
+        sb.AppendLine($"- 服务地址与 TOKEN 取自项目根 `.mcp.json` 的 `{McpClientConfig.ServerKey}` 条目;"
+            + $"未配置时先执行 `irm {root}{McpInstallPath} | iex`");
+        sb.AppendLine("- 省略「目标地址」时写入当前目录;给目录(或以 `/`、`\\` 结尾)则自动命名为 `<id>.png`");
+        sb.AppendLine("- 退出码:0 成功 / 1 用法或配置错误 / 2 服务端报错、网络不通或写盘失败");
+        sb.AppendLine();
 
         // 刻意不生成「典型工作流」「注意事项」两节:它们不进上下文也无损能力,
         // 却让每次技能加载都多背一段与当前任务无关的长文。工具用法一律以工具自身的 description 为准。
